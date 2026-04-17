@@ -96,6 +96,7 @@ if env['CONF']['HAVE_PROTOBUF']:
     Source('inst_pb_trace.cc', tags=['protobuf'])
 
 SimObject('BaseCPU.py', sim_objects=['BaseCPU'])
+SimObject('ashi/BaseAshiCPU.py', sim_objects=['BaseAshiCPU'])
 SimObject('CpuCluster.py', sim_objects=['CpuCluster'])
 SimObject('CPUTracers.py', sim_objects=[
     'ExeTracer', 'IntelTrace', 'NativeTrace'])
@@ -105,6 +106,7 @@ SimObject('TimingExpr.py', sim_objects=[
     enums=['TimingExprOp'])
 
 Source('activity.cc')
+Source('ashi/cpu.cc')
 Source('base.cc')
 Source('exetrace.cc')
 Source('inteltrace.cc')
@@ -118,6 +120,8 @@ Source('simple_thread.cc')
 Source('thread_context.cc')
 Source('thread_state.cc')
 Source('timing_expr.cc')
+
+SimObject('ashi/AshiCPU.py', sim_objects=[], tags=['isa'])
 
 if env['CONF']['USE_CAPSTONE']:
     SourceLib('capstone')
