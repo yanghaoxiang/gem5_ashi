@@ -22,6 +22,14 @@ class CPU : public BaseCPU
     Counter committedOps;
 
   public:
+    enum Status
+    {
+        Running,
+        Idle
+    };  
+
+    Status _status;
+
     CPU(const BaseAshiCPUParams &params);
 
     void wakeup(ThreadID tid) override;
@@ -30,6 +38,13 @@ class CPU : public BaseCPU
     Counter totalOps() const override;
 
     void verifyMemoryMode() const override;
+    void activateContext(ThreadID tid) override;
+
+    void fetch();
+
+  private:
+    EventFunctionWrapper fetchEvent;
+
 
   protected:
     Port &getDataPort() override;
