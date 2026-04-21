@@ -1,5 +1,4 @@
-# Copyright (c) 2008 The Hewlett-Packard Development Company
-# All rights reserved.
+# Copyright 2021 Google, Inc.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
@@ -24,17 +23,15 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.defines import buildEnv
-from m5.objects.BaseCPU import BaseCPU
-from m5.objects.BranchPredictor import *
-from m5.objects.DummyChecker import DummyChecker
-from m5.params import *
+import m5.defines
 
+arch_vars = [
+    "USE_RISCV_ISA",
+]
 
-class BaseAshiCPU(BaseCPU):
-    type = "BaseAshiCPU"
-    abstract = True
-    cxx_header = "cpu/ashi/base.hh"
-    cxx_class = "gem5::BaseAshiCPU"
+enabled = list(filter(lambda var: m5.defines.buildEnv[var], arch_vars))
 
-    branchPred = Param.BranchPredictor(NULL, "Branch Predictor")
+if len(enabled) == 1:
+    arch = enabled[0]
+    if arch == "USE_RISCV_ISA":
+        from m5.objects.RiscvCPU import RiscvTimingAshiCPU as TimingAshiCPU

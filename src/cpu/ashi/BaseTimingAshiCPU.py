@@ -1,4 +1,4 @@
-# Copyright (c) 2008 The Hewlett-Packard Development Company
+# Copyright (c) 2007 The Regents of The University of Michigan
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -24,17 +24,19 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.defines import buildEnv
-from m5.objects.BaseCPU import BaseCPU
-from m5.objects.BranchPredictor import *
-from m5.objects.DummyChecker import DummyChecker
+from m5.objects.BaseAshiCPU import BaseAshiCPU
 from m5.params import *
 
 
-class BaseAshiCPU(BaseCPU):
-    type = "BaseAshiCPU"
-    abstract = True
-    cxx_header = "cpu/ashi/base.hh"
-    cxx_class = "gem5::BaseAshiCPU"
+class BaseTimingAshiCPU(BaseAshiCPU):
+    type = "BaseTimingAshiCPU"
+    cxx_header = "cpu/ashi/timing.hh"
+    cxx_class = "gem5::TimingAshiCPU"
 
-    branchPred = Param.BranchPredictor(NULL, "Branch Predictor")
+    @classmethod
+    def memory_mode(cls):
+        return "timing"
+
+    @classmethod
+    def support_take_over(cls):
+        return True
