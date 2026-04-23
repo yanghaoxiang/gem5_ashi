@@ -61,12 +61,6 @@ namespace gem5
 {
 
 void
-TimingAshiCPU::init()
-{
-    BaseAshiCPU::init();
-}
-
-void
 TimingAshiCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
 {
     pkt = _pkt;
@@ -679,7 +673,7 @@ void
 TimingAshiCPU::fetch()
 {
     // Change thread if multi-threaded
-    swapActiveThread();
+    //swapActiveThread();
 
     SimpleExecContext &t_info = *threadInfo[curThread];
     SimpleThread* thread = t_info.thread;

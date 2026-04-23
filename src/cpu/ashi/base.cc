@@ -131,21 +131,21 @@ BaseAshiCPU::checkPcEventQueue()
     } while (oldpc != pc);
 }
 
-void
-BaseAshiCPU::swapActiveThread()
-{
-    if (numThreads > 1) {
-        if ((!curStaticInst || !curStaticInst->isDelayedCommit()) &&
-             !threadInfo[curThread]->stayAtPC) {
-            // Swap active threads
-            if (!activeThreads.empty()) {
-                curThread = activeThreads.front();
-                activeThreads.pop_front();
-                activeThreads.push_back(curThread);
-            }
-        }
-    }
-}
+//void
+//BaseAshiCPU::swapActiveThread()
+//{
+//    if (numThreads > 1) {
+//        if ((!curStaticInst || !curStaticInst->isDelayedCommit()) &&
+//             !threadInfo[curThread]->stayAtPC) {
+//            // Swap active threads
+//            if (!activeThreads.empty()) {
+//                curThread = activeThreads.front();
+//                activeThreads.pop_front();
+//                activeThreads.push_back(curThread);
+//            }
+//        }
+//    }
+//}
 
 void
 BaseAshiCPU::countInst()

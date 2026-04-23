@@ -1,0 +1,267 @@
+我先从 `m5.simulate()` 往下追到所有 CPU 通用入口，再对照 `BaseCPU` 的虚函数接口，整理出“新 CPU 必须实现哪些函数”和“哪些是框架在 CPU 外部调用的”。我在补两类信息：一类是 `m5.simulate()` 直接或间接调用 CPU 的外部入口，另一类是 `BaseCPU`/`ThreadContext` 这组接口里新 CPU 至少要接住哪些回调。
+
+Searched for regex `->activateContext\(|\.activateContext\(|->startup\(|\.startup\(|->drainResume\(|\.drainResume\(|->switchOut\(|\.switchOut\(|->takeOverFrom\(|\.takeOverFrom\(|->suspendContext\(|\.suspendContext\(|->haltContext\(|\.haltContext\(` (`gem5` · `gem5_origin/src/**`), 62 results
+
+Searched for regex `class ThreadContext|virtual void activate\(|virtual void suspend\(|virtual void halt\(|takeOverFrom\(` (`gem5` · `gem5_origin/src/cpu/thread_context.hh`), 6 results
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/base.hh#1-1), lines 1 to 460
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/base.cc#1-1), lines 1 to 760
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/thread_context.hh)
+
+Read [](file:///root/work/gem5/gem5_origin/src/sim/simulate.cc#1-1), lines 1 to 320
+
+我已经定位到通用框架入口和 `BaseCPU` 主接口。下一步补两块：`BaseCPU` 剩余纯虚函数，以及 Python/调度器/系统代码里所有“从 CPU 外部打进 CPU 实现”的调用点。
+
+Searched for regex `tc->activate\(|tc->suspend\(|tc->halt\(|context->activate\(|thread->activate\(|switchOut\(|takeOverFrom\(|drainResume\(|obj.startup\(` (`gem5` · `gem5_origin/src/{python/m5,sim,arch,configs,cpu/BaseCPU.py,cpu/simple_thread.cc,cpu/o3/thread_context.cc,cpu/minor/cpu.cc,cpu/simple/base.cc}/**`), 109 results
+
+Searched for regex `dmDrainResume\(|drainResume\(` (`gem5` · `gem5_origin/src/sim/**`), 10 results
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/base.hh#460-460), lines 460 to 820
+
+Read [](file:///root/work/gem5/gem5_origin/src/python/m5/simulate.py#460-460), lines 460 to 530
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/BaseCPU.py#1-1), lines 1 to 220
+
+Read [](file:///root/work/gem5/gem5_origin/src/sim/drain.cc#200-200), lines 200 to 230
+
+我已经把框架侧真正打到 CPU 的几个总入口分出来了：`startup`、`activate/suspend/halt`、`switchOut/takeOverFrom`、以及恢复时的 `drainResume`。现在补 CPU 子类各自覆盖了哪些接口，这样可以区分“必须实现”和“常见但可继承默认实现”。
+
+Searched for regex `override;|override \{|virtual .* override` (`gem5` · `gem5_origin/src/cpu/{o3/minor,simple}/**`), 40 results
+
+Searched for regex `void drainResume\(|DrainState drain\(|switchOut\(|takeOverFrom\(|activateContext\(|suspendContext\(|haltContext\(|startup\(` (`gem5` · `gem5_origin/src/cpu/simple/**`), 31 results
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/o3/cpu.hh#180-180), lines 180 to 320
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/simple/base.hh)
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/minor/cpu.hh#120-120), lines 120 to 213
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/simple/base.cc#240-240), lines 240 to 340
+
+我再把线程控制和切 CPU 的外部调用点行号补齐，避免回答里只剩接口名没有调用位置。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -RInE "obj.startup\(|old_cpu.switchOut\(|new_cpu.takeOverFrom\(|tc->activate\(|tc->suspend\(|tc->halt\(|context->activate\(|other_tc->activate\(|waiter\.tc->activate\(|vtc->activate\(|ctc->activate\(|obj->dmDrainResume\(|drainResume\(\)" src/python/m5/simulate.py src/sim src/arch | sed -n '1,220p'
+
+我把三类典型 CPU 的对应实现位置也抓一下，这样你能直接对照“框架入口”到“CPU 实现”。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -RInE "CPU::startup\(|CPU::activateContext\(|CPU::suspendContext\(|CPU::haltContext\(|CPU::drainResume\(|CPU::switchOut\(|CPU::takeOverFrom\(|MinorCPU::startup\(|MinorCPU::activateContext\(|MinorCPU::suspendContext\(|MinorCPU::drainResume\(|MinorCPU::switchOut\(|MinorCPU::takeOverFrom\(|AtomicSimpleCPU::activateContext\(|AtomicSimpleCPU::suspendContext\(|AtomicSimpleCPU::drainResume\(|AtomicSimpleCPU::switchOut\(|AtomicSimpleCPU::takeOverFrom\(|TimingSimpleCPU::activateContext\(|TimingSimpleCPU::suspendContext\(|TimingSimpleCPU::drainResume\(|TimingSimpleCPU::switchOut\(|TimingSimpleCPU::takeOverFrom\(|BaseSimpleCPU::haltContext\(|ThreadContext::activate\(|SimpleThread::activate\(" src/cpu/o3 src/cpu/minor src/cpu/simple | sed -n '1,220p'
+
+还差一个接口边界：`wakeup()`。它不是 Python 直接调的，但框架和中断路径会从 CPU 外部打进来，所以也需要单独确认。
+
+Searched for regex `wakeup\(|wakeCPU\(` (`gem5` · `gem5_origin/src/{cpu,sim,arch}/**`), 88 results
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/base.hh#120-120), lines 120 to 260
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/minor/cpu.cc#140-140), lines 140 to 300
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/simple/timing.cc#110-110), lines 110 to 265
+
+Read [](file:///root/work/gem5/gem5_origin/src/cpu/simple/atomic.cc#130-130), lines 130 to 275
+
+我把“纯虚函数”和 `ThreadContext` 必要接口的行号也取一下，后面就能明确区分“必须实现”和“按功能选择实现”。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -nE "virtual Port &getDataPort|virtual Port &getInstPort|virtual void wakeup\(|virtual Counter totalInsts|virtual Counter totalOps|virtual void activate\(\) = 0|virtual void suspend\(\) = 0|virtual void halt\(\) = 0|virtual void takeOverFrom\(ThreadContext|void init\(\) override;|void startup\(\) override;|virtual void switchOut\(|virtual void takeOverFrom\(BaseCPU|virtual void verifyMemoryMode\(" src/cpu/base.hh src/cpu/thread_context.hh
+
+再补 `BaseCPU::*Context` 这组入口的声明行号。它们不是纯虚，但几乎所有可运行 CPU 都需要覆盖。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -nE "virtual void activateContext|virtual void suspendContext|virtual void haltContext" src/cpu/base.hh
+
+我顺手把 O3 的 `wakeup()` 位置也记上，和 Minor/Simple 放到一组。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -nE "CPU::wakeup\(|MinorCPU::wakeup\(|BaseSimpleCPU::wakeup\(" src/cpu/o3/cpu.cc src/cpu/minor/cpu.cc src/cpu/simple/base.cc
+
+我把 simulate.cc 里的 C++ 入口行号也补一下，便于把 Python 和事件循环两层链路接起来。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -nE "GlobalSimLoopExitEvent \*|simulate\(Tick|doSimLoop\(EventQueue" src/sim/simulate.cc
+
+恢复路径我也确认一下 Python 侧入口，避免把 drainResume 只写成 C++ 内部流程。
+
+Ran terminal command:  cd /root/work/gem5/gem5_origin && grep -nE "if _drain_manager.isDrained\(|_drain_manager.resume\(" src/python/m5/simulate.py
+
+**结论**
+严格从 simulate.py 的 m5.simulate() 开始看，框架直接打到 CPU 实现的入口其实不多。真正稳定的“CPU 框架 ABI”主要是这几组：
+
+1. SimObject 生命周期入口：startup，另外在 m5.instantiate 阶段还有 init。
+2. ThreadContext 生命周期入口：activate，suspend，halt，takeOverFrom。
+3. BaseCPU 生命周期入口：activateContext，suspendContext，haltContext，wakeup，drainResume，switchOut，takeOverFrom。
+4. BaseCPU 纯虚入口：getInstPort，getDataPort，wakeup，totalInsts，totalOps。
+
+更重要的一点是：通用事件循环并不会“认识 O3/Minor/Simple 的 tick/fetch/pipeline”。它只会执行事件队列里的事件。真正把 CPU 跑起来的是 CPU 自己在 startup 或 activateContext 里安排的内部事件。也就是说，新 CPU 需要实现的，不是某个统一的 tick 接口，而是上面这些框架入口，再由这些入口去启动你自己的事件/流水线。
+
+**从 m5.simulate 到 CPU 的外部调用链**
+先按“谁在 CPU 实现目录之外调用、但函数定义在 CPU 内部”来列。
+
+1. Python 启动阶段：
+   simulate.py 调 obj.startup()
+   这里会分派到具体 CPU 的 startup。
+   例子：
+   cpu.cc
+   cpu.cc
+
+2. 进入 C++ 事件循环：
+   simulate.py 调到 C++ simulate，
+   C++ 入口在 simulate.cc，主循环在 simulate.cc。
+   这里之后，框架不再通过统一虚函数“直接调用 CPU 执行一步”，而是执行 CPU 自己预先 schedule 的事件。
+
+3. 线程激活路径，决定 CPU 什么时候开始真正运行：
+   外部代码常见调用点有：
+   process.cc
+   system.cc
+   fs_workload.cc
+   fs_workload.cc
+   fs_workload.cc
+
+   这些地方调用 tc->activate()，于是进入 CPU 自己的 ThreadContext::activate。
+   例子：
+   O3 在 thread_context.cc
+   SimpleThread 在 simple_thread.cc
+
+   ThreadContext::activate 再调用 CPU::activateContext。
+   例子：
+   O3 在 cpu.cc
+   Minor 在 cpu.cc
+   Atomic Simple 在 atomic.cc
+   Timing Simple 在 timing.cc
+
+   这一步通常才是“安排 tick/fetch/pipeline 事件”的地方。
+
+4. 线程挂起路径：
+   外部代码会调用 tc->suspend()，常见调用点：
+   syscall_desc.cc
+   futex_map.cc
+   fs_workload.cc
+
+   之后进入 CPU 的 suspendContext。
+   例子：
+   O3 在 cpu.cc
+   Minor 在 cpu.cc
+   Atomic Simple 在 atomic.cc
+   Timing Simple 在 timing.cc
+
+5. 线程停止路径：
+   外部代码会调用 tc->halt()，常见调用点：
+   syscall_emul.cc
+   syscall_emul.cc
+   mt.hh
+
+   之后进入 CPU 的 haltContext。
+   例子：
+   O3 在 cpu.cc
+   Simple 基类在 base.cc
+
+6. 恢复路径：
+   Python 侧如果发现系统已经 drained，会走
+   simulate.py
+   simulate.py
+
+   C++ 侧通过 drain.cc 调 obj->dmDrainResume()，
+   再在 drain.cc 和 drain.cc 分派到具体对象的 drainResume()。
+
+   CPU 例子：
+   O3 在 cpu.cc
+   Minor 在 cpu.cc
+   Atomic Simple 在 atomic.cc
+   Timing Simple 在 timing.cc
+
+7. CPU 切换路径：
+   Python 侧 switchCpus 直接调用
+   simulate.py 的 old_cpu.switchOut()
+   simulate.py 的 new_cpu.takeOverFrom(old_cpu)
+
+   CPU 例子：
+   O3 switchOut 在 cpu.cc
+   O3 takeOverFrom 在 cpu.cc
+   Minor switchOut 在 cpu.cc
+   Minor takeOverFrom 在 cpu.cc
+   Atomic Simple switchOut 在 atomic.cc
+   Atomic Simple takeOverFrom 在 atomic.cc
+   Timing Simple switchOut 在 timing.cc
+   Timing Simple takeOverFrom 在 timing.cc
+
+8. 唤醒路径：
+   这个入口不是来自 m5.simulate 本身，但确实是 CPU 外部直接打进 CPU 的通用入口。
+   基类声明在 base.hh。
+   外部调用来源包括：
+   base.cc 的 BaseCPU::postInterrupt
+   interrupts.cc
+   isa.cc
+   pseudo_inst.cc
+
+   CPU 例子：
+   O3 在 cpu.cc
+   Minor 在 cpu.cc
+   Simple 基类在 base.cc
+
+**如果实现一个新的 CPU，哪些函数必须实现**
+这里分两层看。
+
+1. 编译层面的硬要求，也就是 BaseCPU 纯虚函数：
+   getDataPort，见 base.hh
+   getInstPort，见 base.hh
+   wakeup，见 base.hh
+   totalInsts，见 base.hh
+   totalOps，见 base.hh
+
+2. 让 CPU 真正“能跑”的实际必备入口，虽然不是纯虚，但基本都要覆盖：
+   activateContext，声明在 base.hh
+   suspendContext，声明在 base.hh
+   haltContext，声明在 base.hh
+   startup，声明在 base.hh
+   verifyMemoryMode，声明在 base.hh
+
+   原因很简单：
+   activateContext 必须负责把你的内部事件跑起来。
+   suspendContext 和 haltContext 必须负责把这些事件停下来。
+   startup 通常要初始化 stage、pipeline、fetch state 或初始广播。
+   verifyMemoryMode 要防止 CPU 跑在不支持的 memory mode 上。
+
+3. 如果你要支持 drain、checkpoint、CPU handover，这些也基本必须实现：
+   drain 和 drainResume。现有可运行 CPU 都实现了这组。
+   switchOut，见 base.hh
+   takeOverFrom，见 base.hh
+   serializeThread 和 unserializeThread，这样 checkpoint 才能保存和恢复线程状态。
+
+4. 如果你自己实现 ThreadContext，而不是复用现成实现，那么 ThreadContext 这组也是硬要求：
+   activate，见 thread_context.hh
+   suspend，见 thread_context.hh
+   halt，见 thread_context.hh
+   takeOverFrom，见 thread_context.hh
+
+   这组函数通常只是把外部 ThreadContext 生命周期转发回你的 CPU::activateContext、CPU::suspendContext、CPU::haltContext。
+
+**最实用的结论**
+如果你的问题是“做一个新的 CPU 模型，最少要接住哪些框架回调”，答案是下面这组。
+
+1. BaseCPU 纯虚：
+   getInstPort
+   getDataPort
+   wakeup
+   totalInsts
+   totalOps
+
+2. 基本都会重写：
+   startup
+   activateContext
+   suspendContext
+   haltContext
+   verifyMemoryMode
+
+3. 只要支持完整生命周期，通常还要有：
+   drain
+   drainResume
+   switchOut
+   takeOverFrom
+   serializeThread
+   unserializeThread
+
+4. 如果不用现成 ThreadContext，还要实现：
+   ThreadContext::activate
+   ThreadContext::suspend
+   ThreadContext::halt
+   ThreadContext::takeOverFrom
+
+还有一个经常被忽略的点：通用框架不会帮你调用“执行一步”的函数。你必须在 activateContext 或 startup 里自己 schedule 内部事件，然后由事件回调进入你自己的 tick、fetch 或 pipeline 逻辑。现有 CPU 就是这么做的：O3 在 cpu.cc，Minor 在 cpu.cc，Timing Simple 在 timing.cc，Atomic Simple 在 atomic.cc。
+
+如果你要，我下一条可以继续把这些入口整理成一张“新 CPU 实现清单”，按“必须实现 / 建议实现 / 可复用默认实现”三栏列出来。

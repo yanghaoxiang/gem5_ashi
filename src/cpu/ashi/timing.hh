@@ -57,8 +57,64 @@ class TimingAshiCPU : public BaseAshiCPU
     TimingAshiCPU(const BaseTimingAshiCPUParams &params);
     virtual ~TimingAshiCPU();
 
-    void init() override;
 
+
+    DrainState drain() override;
+    void drainResume() override;
+
+    void switchOut() override;
+    void takeOverFrom(BaseCPU *oldCPU) override;
+
+    void verifyMemoryMode() const override;
+
+    void activateContext(ThreadID thread_num) override;
+    void suspendContext(ThreadID thread_num) override;
+
+    Fault initiateMemRead(Addr addr, unsigned size,
+            Request::Flags flags,
+            const std::vector<bool>& byte_enable =std::vector<bool>())
+        override;
+
+    Fault writeMem(uint8_t *data, unsigned size,
+                   Addr addr, Request::Flags flags, uint64_t *res,
+                   const std::vector<bool>& byte_enable = std::vector<bool>())
+        override;
+
+    Fault initiateMemAMO(Addr addr, unsigned size, Request::Flags flags,
+                         AtomicOpFunctorPtr amo_op) override;
+
+    void fetch();
+    void sendFetch(const Fault &fault,
+                   const RequestPtr &req, ThreadContext *tc);
+    void completeIfetch(PacketPtr );
+    void completeDataAccess(PacketPtr pkt);
+    void advanceInst(const Fault &fault);
+
+    /** This function is used by the page table walker to determine if it could
+     * translate the a pending request or if the underlying request has been
+     * squashed. This always returns false for the simple timing CPU as it never
+     * executes any instructions speculatively.
+     * @ return Is the current instruction squashed?
+     */
+    bool isSquashed() const { return false; }
+
+    /**
+     * Print state of address in memory system via PrintReq (for
+     * debugging).
+     */
+    void printAddr(Addr a);
+
+    /**
+     * Finish a DTB translation.
+     * @param state The DTB translation state.
+     */
+    void finishTranslation(WholeTranslationState *state);
+
+    /** hardware transactional memory & TLBI operations **/
+    Fault initiateMemMgmtCmd(Request::Flags flags) override;
+
+    void htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
+                            HtmFailureFaultCause) override;
   private:
 
     /*
@@ -153,6 +209,49 @@ class TimingAshiCPU : public BaseAshiCPU
     // This function always implicitly uses dcache_pkt.
     bool handleWritePacket();
 
+  private:
+
+    EventFunctionWrapper fetchEvent;
+
+    struct IprEvent : Event
+    {
+        Packet *pkt;
+        TimingAshiCPU *cpu;
+        IprEvent(Packet *_pkt, TimingAshiCPU *_cpu, Tick t);
+        virtual void process();
+        virtual const char *description() const;
+    };
+
+    /**
+     * Check if a system is in a drained state.
+     *
+     * We need to drain if:
+     * <ul>
+     * <li>We are in the middle of a microcode sequence as some CPUs
+     *     (e.g., HW accelerated CPUs) can't be started in the middle
+     *     of a gem5 microcode sequence.
+     *
+     * <li>Stay at PC is true.
+     *
+     * <li>A fetch event is scheduled. Normally this would never be the
+     *     case with microPC() == 0, but right after a context is
+     *     activated it can happen.
+     * </ul>
+     */
+    bool isCpuDrained() const {
+        SimpleExecContext& t_info = *threadInfo[curThread];
+        SimpleThread* thread = t_info.thread;
+
+        return thread->pcState().microPC() == 0 && !t_info.stayAtPC &&
+               !fetchEvent.scheduled();
+    }
+
+    /**
+     * Try to complete a drain request.
+     *
+     * @returns true if the CPU is drained, false otherwise.
+     */
+    bool tryCompleteDrain();
     /**
      * A TimingCPUPort overrides the default behaviour of the
      * recvTiming and recvRetry and implements events for the
@@ -254,13 +353,10 @@ class TimingAshiCPU : public BaseAshiCPU
     };
 
     void updateCycleCounts();
-
     IcachePort icachePort;
     DcachePort dcachePort;
-
     PacketPtr ifetch_pkt;
     PacketPtr dcache_pkt;
-
     Cycles previousCycle;
 
   protected:
@@ -271,108 +367,7 @@ class TimingAshiCPU : public BaseAshiCPU
     /** Return a reference to the instruction port. */
     Port &getInstPort() override { return icachePort; }
 
-  public:
 
-    DrainState drain() override;
-    void drainResume() override;
-
-    void switchOut() override;
-    void takeOverFrom(BaseCPU *oldCPU) override;
-
-    void verifyMemoryMode() const override;
-
-    void activateContext(ThreadID thread_num) override;
-    void suspendContext(ThreadID thread_num) override;
-
-    Fault initiateMemRead(Addr addr, unsigned size,
-            Request::Flags flags,
-            const std::vector<bool>& byte_enable =std::vector<bool>())
-        override;
-
-    Fault writeMem(uint8_t *data, unsigned size,
-                   Addr addr, Request::Flags flags, uint64_t *res,
-                   const std::vector<bool>& byte_enable = std::vector<bool>())
-        override;
-
-    Fault initiateMemAMO(Addr addr, unsigned size, Request::Flags flags,
-                         AtomicOpFunctorPtr amo_op) override;
-
-    void fetch();
-    void sendFetch(const Fault &fault,
-                   const RequestPtr &req, ThreadContext *tc);
-    void completeIfetch(PacketPtr );
-    void completeDataAccess(PacketPtr pkt);
-    void advanceInst(const Fault &fault);
-
-    /** This function is used by the page table walker to determine if it could
-     * translate the a pending request or if the underlying request has been
-     * squashed. This always returns false for the simple timing CPU as it never
-     * executes any instructions speculatively.
-     * @ return Is the current instruction squashed?
-     */
-    bool isSquashed() const { return false; }
-
-    /**
-     * Print state of address in memory system via PrintReq (for
-     * debugging).
-     */
-    void printAddr(Addr a);
-
-    /**
-     * Finish a DTB translation.
-     * @param state The DTB translation state.
-     */
-    void finishTranslation(WholeTranslationState *state);
-
-    /** hardware transactional memory & TLBI operations **/
-    Fault initiateMemMgmtCmd(Request::Flags flags) override;
-
-    void htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
-                            HtmFailureFaultCause) override;
-
-  private:
-
-    EventFunctionWrapper fetchEvent;
-
-    struct IprEvent : Event
-    {
-        Packet *pkt;
-        TimingAshiCPU *cpu;
-        IprEvent(Packet *_pkt, TimingAshiCPU *_cpu, Tick t);
-        virtual void process();
-        virtual const char *description() const;
-    };
-
-    /**
-     * Check if a system is in a drained state.
-     *
-     * We need to drain if:
-     * <ul>
-     * <li>We are in the middle of a microcode sequence as some CPUs
-     *     (e.g., HW accelerated CPUs) can't be started in the middle
-     *     of a gem5 microcode sequence.
-     *
-     * <li>Stay at PC is true.
-     *
-     * <li>A fetch event is scheduled. Normally this would never be the
-     *     case with microPC() == 0, but right after a context is
-     *     activated it can happen.
-     * </ul>
-     */
-    bool isCpuDrained() const {
-        SimpleExecContext& t_info = *threadInfo[curThread];
-        SimpleThread* thread = t_info.thread;
-
-        return thread->pcState().microPC() == 0 && !t_info.stayAtPC &&
-               !fetchEvent.scheduled();
-    }
-
-    /**
-     * Try to complete a drain request.
-     *
-     * @returns true if the CPU is drained, false otherwise.
-     */
-    bool tryCompleteDrain();
 };
 
 } // namespace gem5

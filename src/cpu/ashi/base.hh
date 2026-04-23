@@ -87,7 +87,7 @@ class BaseAshiCPU : public BaseCPU
     branch_prediction::BPredUnit *branchPred;
 
     void checkPcEventQueue();
-    void swapActiveThread();
+    //void swapActiveThread();
 
   public:
     BaseAshiCPU(const BaseAshiCPUParams &params);

@@ -1,0 +1,260 @@
+Compacted conversation我收窄到“CPU 对外接口面”本身：只查 O3 顶层、O3 ThreadContext，以及它们在框架/Process/Python 里的外部调用点。这样最后给你的会是“谁在 CPU 外部显式调用了什么”，不会再混进 rename、ROB、LSQ 这类内部细节。
+
+Searched for regex `class BaseO3CPU|cxx_class = \"gem5::o3::CPU\"|class RiscvO3CPU` (`**/src/cpu/o3/BaseO3CPU.py|src/arch/riscv/RiscvCPU.py`), no results
+
+Searched for regex `void init\(|void startup\(|void activateContext\(|void suspendContext\(|void haltContext\(|drainResume\(|wakeup\(|getInstPort\(|getDataPort\(` (`**/src/cpu/o3/cpu.hh`), 11 results
+
+Searched for regex `activate\(\)|suspend\(\)|halt\(\)|pcState\(|getReg\(|setReg\(|getMMUPtr\(|getIsaPtr\(|getDecoderPtr\(|scheduleInstCountEvent\(|descheduleInstCountEvent\(` (`**/src/cpu/o3/thread_context.hh`), 17 results
+
+我现在补“外部是谁在调这些接口”。重点只抓真正跨出 CPU 子系统边界的调用点，比如 `simulate.py`、`process.cc`、Python 配置端口绑定和通用 BaseCPU 框架。
+
+Searched for regex `obj\.init\(\)|obj\.startup\(\)` (`**/src/python/m5/simulate.py`), 2 results
+
+Searched for regex `tc->activate\(|tc->suspend\(|tc->halt\(` (`**/src/**/*.cc`), 32 results
+
+Searched for text `icache_port|dcache_port` (`**/src/cpu/BaseCPU.py|configs/**/*.py`), no results
+
+生命周期和 ThreadContext 外部调用点已经拿到。还差一块是 Python 侧显式使用的对象名，比如 `icache_port` / `dcache_port` / `createThreads` 这些入口，我补完后就能给你“只保留外部接口面”的最终表。
+
+Searched for regex `icache_port|dcache_port|createThreads\(|createInterruptController\(` (`**/src/cpu/BaseCPU.py`), 9 results
+
+Searched for regex `createThreads\(|createInterruptController\(|icache_port|dcache_port` (`**/configs/**/*.py`), 71 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/BaseCPU.py#1-1), lines 1 to 280
+
+Python 侧的显式入口也拿到了：配置脚本真正直接碰的是 `icache_port`、`dcache_port`、`createThreads()`、`createInterruptController()`。我再补 `BaseO3CPU` 与架构绑定类的位置，然后就按“外部对象/方法 -> 外部调用点 -> O3 对应位置”来收束。
+
+Searched for regex `class BaseO3CPU|cxx_class = "gem5::o3::CPU"|memory_mode\(|require_caches\(|support_take_over\(` (`**/src/cpu/o3/BaseO3CPU.py`), 5 results
+
+Searched for regex `class RiscvO3CPU|ArchDecoder =|ArchMMU =|ArchInterrupts =|ArchISA =` (`**/src/arch/riscv/RiscvCPU.py`), 5 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/BaseO3CPU.py#1-1), lines 1 to 120
+
+我再补一组“BaseCPU 框架直接调的外部接口”，主要是 CPU 切换和统计停止这类。如果你的自定义核不支持这些，我会在结果里明确标成“可不实现/可返回不支持”，避免把 BaseCPU 的全部外部 API 都误判成必做。
+
+Searched for regex `switchOut\(|takeOverFrom\(|flushTLBs\(|scheduleInstStop\(|getCurrentInstCount\(|scheduleSimpointsInstStop\(|scheduleInstStopAnyThread\(` (`**/configs/**/*.py|tests/**/*.py|src/python/**/*.py`), no results
+
+Searched for regex `switchOut\(|takeOverFrom\(|switchedOut\(` (`**/src/cpu/o3/cpu.hh|src/cpu/o3/cpu.cc`), no results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/thread_context.cc)
+
+外部状态访问面还需要一个样本集：`pcState/getReg/setReg/getMMUPtr/getDecoderPtr/getIsaPtr` 这些确实是 ThreadContext 的对外 API，但我只补代表性的外部调用点，不再把全仓库所有调用都展开。
+
+Searched for regex `->pcState\(|\.pcState\(` (`**/src/**/*.cc`), 40 results
+
+Searched for regex `->getReg\(|->setReg\(` (`**/src/**/*.cc`), 40 results
+
+Searched for regex `->getMMUPtr\(|->getDecoderPtr\(|->getIsaPtr\(` (`**/src/**/*.cc`), 40 results
+
+我再补最后一小块：按指令数事件和 `ThreadContext` 取回入口。这样最终表里就能区分“外部直接调 ThreadContext”与“外部通过 CPU 框架生命周期调 CPU 本体”两类。
+
+Searched for regex `scheduleInstCountEvent\(|descheduleInstCountEvent\(` (`**/src/**/*.cc|tests/**/*.cc`), no results
+
+Searched for regex `tcBase\(|getContext\(` (`**/src/**/*.cc`), 60 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/python/m5/simulate.py#150-150), lines 150 to 270
+
+还缺一个“外部先拿到 ThreadContext 的入口”。如果 `getContext`/`tcBase` 是从 BaseCPU 继承的，我会在答案里标成“通用 BaseCPU 提供，不是 O3 新增接口”；如果 O3 自己覆盖了，就单列出来。
+
+Searched for regex `getContext\(|tcBase\(` (`**/src/cpu/base.hh|src/cpu/base.cc|src/cpu/o3/cpu.hh`), no results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/base.hh#240-240), lines 240 to 420
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/cpu.hh#520-520), lines 520 to 610
+
+我补一下 O3 顶层这些生命周期接口的实现位置，避免最后只给声明不够落地。
+
+Searched for regex `CPU::init\(|CPU::startup\(|CPU::activateContext\(|CPU::suspendContext\(|CPU::haltContext\(|CPU::drainResume\(|CPU::wakeup\(` (`**/src/cpu/o3/cpu.cc`), 11 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/cpu.cc#150-150), lines 150 to 340
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/cpu.cc#500-500), lines 500 to 760
+
+CPU 切换那组接口我单独在常用脚本里查一下；如果确实有外部显式调用，我会把它们放到“可选外部接口”而不是“基础运行必需”。
+
+Searched for regex `switchOut\(|takeOverFrom\(|switchedOut\(` (`**/configs/common/Simulation.py`), no results
+
+Searched for regex `flushTLBs\(` (`**/configs/common/Simulation.py|configs/**/*.py|tests/**/*.py`), no results
+
+Searched for regex `scheduleInstStop\(|getCurrentInstCount\(|scheduleSimpointsInstStop\(|scheduleInstStopAnyThread\(` (`**/configs/**/*.py|tests/**/*.py`), no results
+
+我不再限定文件模式了，直接全仓搜这几个低频 API；查不到就不把它们算进你的“外部最小接口面”。
+
+Searched for regex `switchOut\(|takeOverFrom\(|switchedOut\(`, 80 results
+
+Searched for regex `flushTLBs\(`, 3 results
+
+Searched for regex `scheduleInstStop\(|getCurrentInstCount\(|scheduleSimpointsInstStop\(|scheduleInstStopAnyThread\(`, 27 results
+
+切换/停止这两组低频接口已经分出来了：它们确实是外部接口，但不属于“基础启动执行面”。我补一个 Python 包装位置，然后最后会把它们单列为“可选外部接口”。
+
+Searched for regex `def takeOverFrom\(|PyBindMethod\("switchOut"\)|PyBindMethod\("takeOverFrom"\)|PyBindMethod\("flushTLBs"\)|PyBindMethod\("scheduleInstStop"\)|PyBindMethod\("getCurrentInstCount"\)|PyBindMethod\("scheduleSimpointsInstStop"\)|PyBindMethod\("scheduleInstStopAnyThread"\)` (`**/src/cpu/BaseCPU.py`), 8 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/python/gem5/components/processors/base_cpu_core.py#150-150), lines 150 to 190
+
+Read [](file:///root/work/gem5/gem5_ashi/util/cxx_config/main.cc#286-286), lines 286 to 302
+
+按指令数事件的外部调用点也补到了。最后结果里我会把它放在线程上下文的“统计/调试接口”小节，而不是混进执行主路径。
+
+Searched for regex `scheduleInstCountEvent\(|descheduleInstCountEvent\(`, 19 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/base/remote_gdb.cc#985-985), lines 985 to 1005
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/thread_context.hh#78-78), lines 78 to 102
+
+我补一条很关键的对应关系：外部 Python 调的 createInterruptController，在 O3 里不是某个同名 C++ 方法，而是构造后被显式检查过。这样你就能把“外部入口”与“O3 内部依赖点”一一对上。
+
+Searched for regex `Ensure createInterruptController\(\) is called|has no interrupt controller` (`**/src/cpu/o3/cpu.cc`), 2 results
+
+Searched for regex `createThreads\(|params\.isa\[|params\.decoder\[|threadContexts\.push_back` (`**/src/cpu/o3/cpu.cc`), 4 results
+
+Searched for regex `thread->pcEventQueue|thread->comInstEventQueue|ThreadState \*thread;` (`**/src/cpu/o3/thread_context.hh`), 6 results
+
+当前活动文件正好是这部分底座。我把 ThreadState 里被外部接口间接依赖的三个成员位置也抓一下：PC 事件队列、按提交条数事件队列、TC 指针。
+
+Searched for regex `PCEventQueue pcEventQueue|EventQueue comInstEventQueue|gem5::ThreadContext \*tc = nullptr` (`**/src/cpu/o3/thread_state.hh`), 3 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/thread_state.hh#50-50), lines 50 to 90
+
+类方法这三项我也补一下调用侧：memory_mode、require_caches、support_take_over。它们不是运行期回调，但确实是外部框架读 CPU 能力时显式使用的名字。
+
+Searched for regex `memory_mode\(\)|require_caches\(\)|support_take_over\(\)` (`**/configs/**/*.py|src/python/**/*.py|tests/**/*.py`), no results
+
+Read [](file:///root/work/gem5/gem5_ashi/configs/common/Simulation.py#500-500), lines 500 to 700
+
+Read [](file:///root/work/gem5/gem5_ashi/configs/common/CacheConfig.py#180-180), lines 180 to 230
+
+类方法里还差 memory_mode 的外部读取位置。我只查这一项，拿到就结束采集。
+
+Searched for regex `memory_mode\(` (`**/configs/common/Simulation.py`), 1 result
+
+Searched for regex `memory_mode\(` (`**/src/python/**/*.py|configs/**/*.py`), no results
+
+Searched for regex `setMemoryMode|memory mode` (`**/configs/common/Simulation.py`), 1 result
+
+采集完成。最后只会保留两类外部面：Python 配置/框架直接碰到的 CPU 对象与方法，以及外部模块直接碰到的 ThreadContext 方法。内部 stage、内部 helper、CPU 内部互调都不再列。
+
+Read [](file:///root/work/gem5/gem5_ashi/configs/common/Simulation.py#50-50), lines 50 to 70
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/thread_context.hh#102-102), lines 102 to 190
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/cpu.hh#188-188), lines 188 to 290
+
+我补一条获取入口：外部要操作 O3 线程，通常先从 BaseCPU.getContext 拿到 ThreadContext。这个接口不是 O3 新增的，但 O3 必须把自己的 TC 注册进去。
+
+Searched for regex `virtual ThreadContext \*getContext\(int tn\)|threadContexts.push_back\(tc\)` (`**/src/cpu/base.hh|src/cpu/o3/cpu.cc`), no results
+
+Searched for regex `getContext\(0\)|getContext\(tid\)|getContext\(cid\)` (`**/src/**/*.cc`), 11 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/gpu-compute/shader.cc#148-148), lines 148 to 172
+
+BaseCPU.getContext 的定义行我只补一个精确号。然后所有外部入口都齐了。
+
+Searched for regex `virtual ThreadContext \*getContext\(int tn\)` (`**/src/cpu/base.hh`), 1 result
+
+Searched for regex `threadContexts.push_back\(tc\)` (`**/src/cpu/o3/cpu.cc`), 1 result
+
+我补一组轻量 accessor：getCpuPtr、getProcessPtr、status。这些也是 ThreadContext 的外部可见面，但如果全仓没人从 CPU 外部用，就不进主表。
+
+Searched for regex `->getCpuPtr\(|->getProcessPtr\(|->status\(\)` (`**/src/**/*.cc`), 40 results
+
+Searched for regex `BaseCPU \*getCpuPtr\(|Process \*getProcessPtr\(|Status status\(\) const override` (`**/src/cpu/o3/thread_context.hh`), 3 results
+
+中断/设备侧还会用到 getCpuPtr、threadId、status 这组三元组。我把 threadId 的行号也补一下，最后放到“仅当你还支持设备/中断交互时保留”的可选组。
+
+Searched for regex `int threadId\(\) const override|void setThreadId\(int id\) override|ContextID contextId\(\) const override` (`**/src/cpu/o3/thread_context.hh`), 3 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/dev/riscv/plic.cc#492-492), lines 492 to 508
+
+Read [](file:///root/work/gem5/gem5_ashi/src/dev/arm/generic_timer.cc#872-872), lines 872 to 882
+
+我把 Simulation.py 里这三个类方法的行号精确化，避免最后只写一个大段范围。
+
+Searched for regex `memory_mode\(|require_caches\(|support_take_over\(` (`**/configs/common/Simulation.py`), 4 results
+
+Searched for regex `createThreads\(|createInterruptController\(` (`**/configs/common/Simulation.py`), 4 results
+
+把 createInterruptController 的常见配置调用点也精确一下，最后主表里就都有具体行号。
+
+Searched for regex `createInterruptController\(` (`**/configs/common/CacheConfig.py|configs/learning_gem5/**/*.py|configs/example/**/*.py`), no results
+
+Searched for regex `icache_port|dcache_port` (`**/configs/learning_gem5/part1/simple-riscv.py|configs/learning_gem5/part1/simple.py|configs/learning_gem5/part1/simple-arm.py|configs/example/**/*.py`), no results
+
+我把 ThreadContext 里几个 setter/getter 的实现行补齐，尤其是 pcState 和寄存器读写，避免最终表里只有头文件声明。
+
+Searched for regex `ThreadContext::pcState\(|ThreadContext::getReg\(|ThreadContext::setReg\(|ThreadContext::copyArchRegs\(|ThreadContext::clearArchRegs\(` (`**/src/cpu/o3/thread_context.cc`), 7 results
+
+Read [](file:///root/work/gem5/gem5_ashi/src/cpu/o3/thread_context.cc#118-118), lines 118 to 190
+
+我补一下 ThreadContext.activate/suspend/halt 的实现行号，尤其是 halt，最后就不用留任何模糊位置了。
+
+Searched for regex `ThreadContext::activate\(|ThreadContext::suspend\(|ThreadContext::halt\(` (`**/src/cpu/o3/thread_context.cc`), 3 results
+
+Searched for regex `getProcessPtr\(|status\(\) != ThreadContext::Active|getCpuPtr\(\)->postInterrupt|getCpuPtr\(\)->wakeup` (`**/src/base/remote_gdb.cc|src/dev/**/*.cc|src/gpu-compute/**/*.cc`), no results
+
+我把 getProcessPtr 和 getCpuPtr 这两个 accessor 的外部样例行号也精确一下；它们会进可选组，不进主路径。
+
+Searched for regex `getProcessPtr\(|status\(\) != ThreadContext::Active`, 20 results
+
+Searched for regex `getCpuPtr\(\)->postInterrupt|getCpuPtr\(\)->wakeup`, 20 results
+
+按你这次收缩后的标准，O3 模板里真正需要看的外部对象只有两个：
+
+1. CPU 对象本身。也就是 Python 配置脚本、仿真框架直接碰到的那个 CPU SimObject。
+2. ThreadContext 对象。也就是 Process、fault、debugger、设备、workload 这些 CPU 外部模块真正拿来控线程和读写架构态的对象。
+
+像 ThreadState、DynInst、Fetch、Rename、IEW、Commit、ROB、LSQ、Scoreboard、RenameMap 这些都属于 CPU 内部实现，下面全部去掉，不再列。
+
+O3 的 Python 入口是 BaseO3CPU.py，RISC-V 具体类是 RiscvCPU.py，其 C++ 实体绑定到 BaseO3CPU.py。
+
+**CPU 对象的外部接口**
+| 外部显式使用名 | 代表性外部调用点 | O3 对应落点 |
+| --- | --- | --- |
+| memory_mode() | Simulation.py | BaseO3CPU.py |
+| require_caches() | Simulation.py, Simulation.py | BaseO3CPU.py |
+| support_take_over() | Simulation.py | BaseO3CPU.py |
+| createThreads() | simple-riscv.py, Simulation.py | Python helper本体在 BaseCPU.py；O3 真正消费这些 ISA 和 decoder 参数并建立线程上下文的位置在 cpu.cc 和 cpu.cc |
+| createInterruptController() | simple-riscv.py, CacheConfig.py | Python helper在 BaseCPU.py；O3 在构造后显式检查该对象是否已创建，位置在 cpu.cc |
+| icache_port | simple-riscv.py | Python 端口声明在 BaseCPU.py；O3 C++ 端口落点是 cpu.hh |
+| dcache_port | simple-riscv.py | Python 端口声明在 BaseCPU.py；O3 C++ 端口落点是 cpu.hh |
+| init() | simulate.py | cpu.cc |
+| startup() | simulate.py | cpu.cc |
+
+这里最重要的一点是：createThreads 和 createInterruptController 是外部脚本显式调用的名字，但在 O3 C++ 侧并没有同名方法。它们分别表现为“构造时读取好 ISA 和 decoder 参数并注册 ThreadContext”以及“构造结束时检查 interrupts 是否已存在”。
+
+**ThreadContext 对象的外部接口**
+外部拿到 ThreadContext 的通用入口不是 O3 自己新增的，而是 BaseCPU 的 base.hh。代表性外部调用点见 shader.cc。O3 把自己的 TC 注册进去的位置在 cpu.cc，实际承载指针在你的当前文件 thread_state.hh。
+
+| 外部显式使用名 | 代表性外部调用点 | O3 对应落点 |
+| --- | --- | --- |
+| activate() | process.cc, syscall_desc.cc | ThreadContext 实现在 thread_context.cc，最后落到 CPU 的 cpu.cc |
+| suspend() | syscall_desc.cc, futex_map.cc | thread_context.cc -> cpu.cc |
+| halt() | syscall_emul.cc | thread_context.cc -> cpu.cc |
+| pcState() 读写 | remote_gdb.cc, process.cc | 读接口在 thread_context.hh，写接口在 thread_context.cc |
+| getReg() / setReg() | fs_workload.cc, fs_workload.cc | 读在 thread_context.cc，写在 thread_context.cc |
+| getMMUPtr() | mem_state.cc | thread_context.hh |
+| getIsaPtr() | faults.cc | thread_context.hh |
+| getDecoderPtr() | faults.cc | thread_context.hh |
+| scheduleInstCountEvent() / descheduleInstCountEvent() / getCurrentInstCount() | remote_gdb.cc, remote_gdb.cc | O3 ThreadContext 接口在 thread_context.hh，底层实际落在 thread_state.hh |
+
+如果你只关心“一个最小可运行的、单线程、无外部中断、无 CPU 切换”的自定义 CPU，那么上面这两张表基本就是你需要保留的外部接口面。
+
+**可选外部接口**
+下面这些也确实是 CPU 外部会显式碰到的名字，但不属于基础 bring-up 主路径。按你的约束，它们大多可以整体降级，或者直接不支持。
+
+| 外部显式使用名 | 代表性外部调用点 | O3 对应落点 |
+| --- | --- | --- |
+| switchOut() / takeOverFrom(BaseCPU) | main.cc | O3 能力声明在 BaseO3CPU.py，实现分别在 cpu.cc 和 cpu.cc |
+| ThreadContext.takeOverFrom() | base.cc | thread_context.cc |
+| getCpuPtr() / threadId() / wakeup() | generic_timer.cc, plic.cc | ThreadContext accessor 在 thread_context.hh 和 thread_context.hh，O3 CPU 的 wakeup 在 cpu.cc |
+| getProcessPtr() | remote_gdb.cc, se_workload.cc | thread_context.hh |
+| status() | remote_gdb.cc | thread_context.hh |
+| scheduleSimpointsInstStop() / scheduleInstStopAnyThread() | base_cpu_core.py, base_cpu_core.py | 这是 BaseCPU 导出的通用外部接口，导出位置在 BaseCPU.py，实现位置在 base.cc 和 base.cc，O3 侧配合点主要是 thread_context.hh |
+
+压缩成一句话就是：
+
+你这条路上真正该拿 O3 当模板看的，不是它的内部乱序结构，而是它对外暴露的两层接口面：
+一层是 Python/框架可见的 CPU 对象，
+一层是 CPU 外部模块可见的 ThreadContext 对象。
+
+如果你愿意，我下一步可以直接把这份表再压成“你的自定义 CPU 在单线程、无中断、无切换约束下，真正必须保留的最小外部接口清单”。
