@@ -35,6 +35,7 @@ SimObject('BaseTimingAshiCPU.py', sim_objects=['BaseTimingAshiCPU'])
 Source('timing.cc')
 
 DebugFlag('AshiCPU')
+DebugFlag('AshiANY')
 
 Source('base.cc')
 SimObject('BaseAshiCPU.py', sim_objects=['BaseAshiCPU'])

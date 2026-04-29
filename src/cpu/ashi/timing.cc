@@ -45,11 +45,11 @@
 #include "base/compiler.hh"
 #include "cpu/exetrace.hh"
 #include "debug/Config.hh"
-#include "debug/Drain.hh"
 #include "debug/ExecFaulting.hh"
 #include "debug/HtmCpu.hh"
 #include "debug/Mwait.hh"
 #include "debug/AshiCPU.hh"
+#include "debug/AshiANY.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "params/BaseTimingAshiCPU.hh"
@@ -60,144 +60,21 @@
 namespace gem5
 {
 
-void
-TimingAshiCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
-{
-    pkt = _pkt;
-    cpu->schedule(this, t);
-}
-
 TimingAshiCPU::TimingAshiCPU(const BaseTimingAshiCPUParams &p)
     : BaseAshiCPU(p), fetchTranslation(this), icachePort(this),
-      dcachePort(this), ifetch_pkt(NULL), dcache_pkt(NULL), previousCycle(0),
+      dcachePort(this), ifetch_pkt(NULL), dcache_pkt(NULL), previousCycle(0),    
       fetchEvent([this]{ fetch(); }, name())
 {
     _status = Idle;
+    cnt_branch = 0;
+    cnt_jr = 0;
+    cnt_j = 0;
 }
-
-
 
 TimingAshiCPU::~TimingAshiCPU()
 {
 }
-
-DrainState
-TimingAshiCPU::drain()
-{
-    // Deschedule any power gating event (if any)
-    deschedulePowerGatingEvent();
-
-    if (switchedOut())
-        return DrainState::Drained;
-
-    if (_status == Idle ||
-        (_status == BaseAshiCPU::Running && isCpuDrained())) {
-        DPRINTF(Drain, "No need to drain.\n");
-        activeThreads.clear();
-        return DrainState::Drained;
-    } else {
-        DPRINTF(Drain, "Requesting drain.\n");
-
-        // The fetch event can become descheduled if a drain didn't
-        // succeed on the first attempt. We need to reschedule it if
-        // the CPU is waiting for a microcode routine to complete.
-        if (_status == BaseAshiCPU::Running && !fetchEvent.scheduled())
-            schedule(fetchEvent, clockEdge());
-
-        return DrainState::Draining;
-    }
-}
-
-void
-TimingAshiCPU::drainResume()
-{
-    assert(!fetchEvent.scheduled());
-    if (switchedOut())
-        return;
-
-    DPRINTF(AshiCPU, "Resume\n");
-    verifyMemoryMode();
-
-    assert(!threadContexts.empty());
-
-    _status = BaseAshiCPU::Idle;
-
-    for (ThreadID tid = 0; tid < numThreads; tid++) {
-        if (threadInfo[tid]->thread->status() == ThreadContext::Active) {
-            threadInfo[tid]->execContextStats.notIdleFraction = 1;
-
-            activeThreads.push_back(tid);
-
-            _status = BaseAshiCPU::Running;
-
-            // Fetch if any threads active
-            if (!fetchEvent.scheduled()) {
-                schedule(fetchEvent, nextCycle());
-            }
-        } else {
-            threadInfo[tid]->execContextStats.notIdleFraction = 0;
-        }
-    }
-
-    // Reschedule any power gating event (if any)
-    schedulePowerGatingEvent();
-}
-
-bool
-TimingAshiCPU::tryCompleteDrain()
-{
-    if (drainState() != DrainState::Draining)
-        return false;
-
-    DPRINTF(Drain, "tryCompleteDrain.\n");
-    if (!isCpuDrained())
-        return false;
-
-    DPRINTF(Drain, "CPU done draining, processing drain event\n");
-    signalDrainDone();
-
-    return true;
-}
-
-void
-TimingAshiCPU::switchOut()
-{
-    SimpleExecContext& t_info = *threadInfo[curThread];
-    [[maybe_unused]] SimpleThread* thread = t_info.thread;
-
-    // hardware transactional memory
-    // Cannot switch out the CPU in the middle of a transaction
-    assert(!t_info.inHtmTransactionalState());
-
-    BaseAshiCPU::switchOut();
-
-    assert(!fetchEvent.scheduled());
-    assert(_status == BaseAshiCPU::Running || _status == Idle);
-    assert(!t_info.stayAtPC);
-    assert(thread->pcState().microPC() == 0);
-
-    updateCycleCounts();
-    updateCycleCounters(BaseCPU::CPU_STATE_ON);
-}
-
-
-void
-TimingAshiCPU::takeOverFrom(BaseCPU *oldCPU)
-{
-    BaseAshiCPU::takeOverFrom(oldCPU);
-
-    previousCycle = curCycle();
-}
-
-void
-TimingAshiCPU::verifyMemoryMode() const
-{
-    if (!system->isTimingMode()) {
-        fatal("The timing CPU requires the memory system to be in "
-              "'timing' mode.\n");
-    }
-}
-
+    
 void
 TimingAshiCPU::activateContext(ThreadID thread_num)
 {
@@ -220,454 +97,6 @@ TimingAshiCPU::activateContext(ThreadID thread_num)
 
     BaseCPU::activateContext(thread_num);
 }
-
-
-void
-TimingAshiCPU::suspendContext(ThreadID thread_num)
-{
-    DPRINTF(AshiCPU, "SuspendContext %d\n", thread_num);
-
-    assert(thread_num < numThreads);
-    activeThreads.remove(thread_num);
-
-    // hardware transactional memory
-    // Cannot suspend context in the middle of a transaction.
-    assert(!threadInfo[curThread]->inHtmTransactionalState());
-
-    if (_status == Idle)
-        return;
-
-    assert(_status == BaseAshiCPU::Running);
-
-    threadInfo[thread_num]->execContextStats.notIdleFraction = 0;
-
-    if (activeThreads.empty()) {
-        _status = Idle;
-
-        if (fetchEvent.scheduled()) {
-            deschedule(fetchEvent);
-        }
-    }
-
-    BaseCPU::suspendContext(thread_num);
-}
-
-bool
-TimingAshiCPU::handleReadPacket(PacketPtr pkt)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    const RequestPtr &req = pkt->req;
-
-    // hardware transactional memory
-    // sanity check
-    if (req->isHTMCmd()) {
-        assert(!req->isLocalAccess());
-    }
-
-    // We're about the issues a locked load, so tell the monitor
-    // to start caring about this address
-    if (pkt->isRead() && pkt->req->isLLSC()) {
-        thread->getIsaPtr()->handleLockedRead(pkt->req);
-    }
-    if (req->isLocalAccess()) {
-        Cycles delay = req->localAccessor(thread->getTC(), pkt);
-        new IprEvent(pkt, this, clockEdge(delay));
-        _status = DcacheWaitResponse;
-        dcache_pkt = NULL;
-    } else if (!dcachePort.sendTimingReq(pkt)) {
-        _status = DcacheRetry;
-        dcache_pkt = pkt;
-    } else {
-        _status = DcacheWaitResponse;
-        // memory system takes ownership of packet
-        dcache_pkt = NULL;
-    }
-    return dcache_pkt == NULL;
-}
-
-void
-TimingAshiCPU::sendData(const RequestPtr &req, uint8_t *data, uint64_t *res,
-                          bool read)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    PacketPtr pkt = buildPacket(req, read);
-    pkt->dataDynamic<uint8_t>(data);
-
-    // hardware transactional memory
-    // If the core is in transactional mode or if the request is HtmCMD
-    // to abort a transaction, the packet should reflect that it is
-    // transactional and also contain a HtmUid for debugging.
-    const bool is_htm_speculative = t_info.inHtmTransactionalState();
-    if (is_htm_speculative || req->isHTMAbort()) {
-        pkt->setHtmTransactional(t_info.getHtmTransactionUid());
-    }
-    if (req->isHTMAbort())
-        DPRINTF(HtmCpu, "htmabort htmUid=%u\n", t_info.getHtmTransactionUid());
-
-    if (req->getFlags().isSet(Request::NO_ACCESS)) {
-        assert(!dcache_pkt);
-        pkt->makeResponse();
-        completeDataAccess(pkt);
-    } else if (read) {
-        handleReadPacket(pkt);
-    } else {
-        bool do_access = true;  // flag to suppress cache access
-
-        if (req->isLLSC()) {
-            do_access = thread->getIsaPtr()->handleLockedWrite(
-                    req, dcachePort.cacheBlockMask);
-        } else if (req->isCondSwap()) {
-            assert(res);
-            req->setExtraData(*res);
-        }
-
-        if (do_access) {
-            dcache_pkt = pkt;
-            handleWritePacket();
-            threadSnoop(pkt, curThread);
-        } else {
-            _status = DcacheWaitResponse;
-            completeDataAccess(pkt);
-        }
-    }
-}
-
-void
-TimingAshiCPU::sendSplitData(const RequestPtr &req1, const RequestPtr &req2,
-                               const RequestPtr &req, uint8_t *data, bool read)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    PacketPtr pkt1, pkt2;
-    buildSplitPacket(pkt1, pkt2, req1, req2, req, data, read);
-
-    // hardware transactional memory
-    // HTM commands should never use SplitData
-    assert(!req1->isHTMCmd() && !req2->isHTMCmd());
-
-    // If the thread is executing transactionally,
-    // reflect this in the packets.
-    if (t_info.inHtmTransactionalState()) {
-        pkt1->setHtmTransactional(t_info.getHtmTransactionUid());
-        pkt2->setHtmTransactional(t_info.getHtmTransactionUid());
-    }
-
-    if (req->getFlags().isSet(Request::NO_ACCESS)) {
-        assert(!dcache_pkt);
-        pkt1->makeResponse();
-        completeDataAccess(pkt1);
-    } else if (read) {
-        SplitFragmentSenderState * send_state =
-            dynamic_cast<SplitFragmentSenderState *>(pkt1->senderState);
-        if (handleReadPacket(pkt1)) {
-            send_state->clearFromParent();
-            send_state = dynamic_cast<SplitFragmentSenderState *>(
-                    pkt2->senderState);
-            if (handleReadPacket(pkt2)) {
-                send_state->clearFromParent();
-            }
-        }
-    } else {
-        dcache_pkt = pkt1;
-        SplitFragmentSenderState * send_state =
-            dynamic_cast<SplitFragmentSenderState *>(pkt1->senderState);
-        if (handleWritePacket()) {
-            send_state->clearFromParent();
-            dcache_pkt = pkt2;
-            send_state = dynamic_cast<SplitFragmentSenderState *>(
-                    pkt2->senderState);
-            if (handleWritePacket()) {
-                send_state->clearFromParent();
-            }
-        }
-    }
-}
-
-void
-TimingAshiCPU::translationFault(const Fault &fault)
-{
-    // fault may be NoFault in cases where a fault is suppressed,
-    // for instance prefetches.
-    updateCycleCounts();
-    updateCycleCounters(BaseCPU::CPU_STATE_ON);
-
-    if ((fault != NoFault) && traceData) {
-        traceFault();
-    }
-
-    if (fault == NoFault) {
-        postExecute();
-    }
-
-    advanceInst(fault);
-}
-
-PacketPtr
-TimingAshiCPU::buildPacket(const RequestPtr &req, bool read)
-{
-    return read ? Packet::createRead(req) : Packet::createWrite(req);
-}
-
-void
-TimingAshiCPU::buildSplitPacket(PacketPtr &pkt1, PacketPtr &pkt2,
-        const RequestPtr &req1, const RequestPtr &req2, const RequestPtr &req,
-        uint8_t *data, bool read)
-{
-    pkt1 = pkt2 = NULL;
-
-    assert(!req1->isLocalAccess() && !req2->isLocalAccess());
-
-    if (req->getFlags().isSet(Request::NO_ACCESS)) {
-        pkt1 = buildPacket(req, read);
-        return;
-    }
-
-    pkt1 = buildPacket(req1, read);
-    pkt2 = buildPacket(req2, read);
-
-    PacketPtr pkt = new Packet(req, pkt1->cmd.responseCommand());
-
-    pkt->dataDynamic<uint8_t>(data);
-    pkt1->dataStatic<uint8_t>(data);
-    pkt2->dataStatic<uint8_t>(data + req1->getSize());
-
-    SplitMainSenderState * main_send_state = new SplitMainSenderState;
-    pkt->senderState = main_send_state;
-    main_send_state->fragments[0] = pkt1;
-    main_send_state->fragments[1] = pkt2;
-    main_send_state->outstanding = 2;
-    pkt1->senderState = new SplitFragmentSenderState(pkt, 0);
-    pkt2->senderState = new SplitFragmentSenderState(pkt, 1);
-}
-
-Fault
-TimingAshiCPU::initiateMemRead(Addr addr, unsigned size,
-                                 Request::Flags flags,
-                                 const std::vector<bool>& byte_enable)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    Fault fault;
-    const Addr pc = thread->pcState().instAddr();
-    unsigned block_size = cacheLineSize();
-    BaseMMU::Mode mode = BaseMMU::Read;
-
-    if (traceData)
-        traceData->setMem(addr, size, flags);
-
-    RequestPtr req = std::make_shared<Request>(
-        addr, size, flags, dataRequestorId(), pc, thread->contextId());
-    req->setByteEnable(byte_enable);
-
-    req->taskId(taskId());
-
-    Addr split_addr = roundDown(addr + size - 1, block_size);
-    assert(split_addr <= addr || split_addr - addr < block_size);
-
-    _status = DTBWaitResponse;
-    if (split_addr > addr) {
-        RequestPtr req1, req2;
-        assert(!req->isLLSC() && !req->isSwap());
-        req->splitOnVaddr(split_addr, req1, req2);
-
-        WholeTranslationState *state =
-            new WholeTranslationState(req, req1, req2, new uint8_t[size],
-                                      NULL, mode);
-        DataTranslation<TimingAshiCPU *> *trans1 =
-            new DataTranslation<TimingAshiCPU *>(this, state, 0);
-        DataTranslation<TimingAshiCPU *> *trans2 =
-            new DataTranslation<TimingAshiCPU *>(this, state, 1);
-
-        thread->mmu->translateTiming(req1, thread->getTC(), trans1, mode);
-        thread->mmu->translateTiming(req2, thread->getTC(), trans2, mode);
-    } else {
-        WholeTranslationState *state =
-            new WholeTranslationState(req, new uint8_t[size], NULL, mode);
-        DataTranslation<TimingAshiCPU *> *translation
-            = new DataTranslation<TimingAshiCPU *>(this, state);
-        thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
-    }
-
-    return NoFault;
-}
-
-bool
-TimingAshiCPU::handleWritePacket()
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    const RequestPtr &req = dcache_pkt->req;
-    if (req->isLocalAccess()) {
-        Cycles delay = req->localAccessor(thread->getTC(), dcache_pkt);
-        new IprEvent(dcache_pkt, this, clockEdge(delay));
-        _status = DcacheWaitResponse;
-        dcache_pkt = NULL;
-    } else if (!dcachePort.sendTimingReq(dcache_pkt)) {
-        _status = DcacheRetry;
-    } else {
-        _status = DcacheWaitResponse;
-        // memory system takes ownership of packet
-        dcache_pkt = NULL;
-    }
-    return dcache_pkt == NULL;
-}
-
-Fault
-TimingAshiCPU::writeMem(uint8_t *data, unsigned size,
-                          Addr addr, Request::Flags flags, uint64_t *res,
-                          const std::vector<bool>& byte_enable)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    uint8_t *newData = new uint8_t[size];
-    const Addr pc = thread->pcState().instAddr();
-    unsigned block_size = cacheLineSize();
-    BaseMMU::Mode mode = BaseMMU::Write;
-
-    if (data == NULL) {
-        assert(flags & Request::STORE_NO_DATA);
-        // This must be a cache block cleaning request
-        memset(newData, 0, size);
-    } else {
-        memcpy(newData, data, size);
-    }
-
-    if (traceData)
-        traceData->setMem(addr, size, flags);
-
-    RequestPtr req = std::make_shared<Request>(
-        addr, size, flags, dataRequestorId(), pc, thread->contextId());
-    req->setByteEnable(byte_enable);
-
-    req->taskId(taskId());
-
-    Addr split_addr = roundDown(addr + size - 1, block_size);
-    assert(split_addr <= addr || split_addr - addr < block_size);
-
-    _status = DTBWaitResponse;
-
-    // TODO: TimingAshiCPU doesn't support arbitrarily long multi-line mem.
-    // accesses yet
-
-    if (split_addr > addr) {
-        RequestPtr req1, req2;
-        assert(!req->isLLSC() && !req->isSwap());
-        req->splitOnVaddr(split_addr, req1, req2);
-
-        WholeTranslationState *state =
-            new WholeTranslationState(req, req1, req2, newData, res, mode);
-        DataTranslation<TimingAshiCPU *> *trans1 =
-            new DataTranslation<TimingAshiCPU *>(this, state, 0);
-        DataTranslation<TimingAshiCPU *> *trans2 =
-            new DataTranslation<TimingAshiCPU *>(this, state, 1);
-
-        thread->mmu->translateTiming(req1, thread->getTC(), trans1, mode);
-        thread->mmu->translateTiming(req2, thread->getTC(), trans2, mode);
-    } else {
-        WholeTranslationState *state =
-            new WholeTranslationState(req, newData, res, mode);
-        DataTranslation<TimingAshiCPU *> *translation =
-            new DataTranslation<TimingAshiCPU *>(this, state);
-        thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
-    }
-
-    // Translation faults will be returned via finishTranslation()
-    return NoFault;
-}
-
-Fault
-TimingAshiCPU::initiateMemAMO(Addr addr, unsigned size,
-                                Request::Flags flags,
-                                AtomicOpFunctorPtr amo_op)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-    SimpleThread* thread = t_info.thread;
-
-    Fault fault;
-    const Addr pc = thread->pcState().instAddr();
-    unsigned block_size = cacheLineSize();
-    BaseMMU::Mode mode = BaseMMU::Write;
-
-    if (traceData)
-        traceData->setMem(addr, size, flags);
-
-    RequestPtr req = std::make_shared<Request>(addr, size, flags,
-                            dataRequestorId(), pc, thread->contextId(),
-                            std::move(amo_op));
-
-    assert(req->hasAtomicOpFunctor());
-
-    req->taskId(taskId());
-
-    Addr split_addr = roundDown(addr + size - 1, block_size);
-
-    // AMO requests that access across a cache line boundary are not
-    // allowed since the cache does not guarantee AMO ops to be executed
-    // atomically in two cache lines
-    // For ISAs such as x86 that requires AMO operations to work on
-    // accesses that cross cache-line boundaries, the cache needs to be
-    // modified to support locking both cache lines to guarantee the
-    // atomicity.
-    if (split_addr > addr) {
-        panic("AMO requests should not access across a cache line boundary\n");
-    }
-
-    _status = DTBWaitResponse;
-
-    WholeTranslationState *state =
-        new WholeTranslationState(req, new uint8_t[size], NULL, mode);
-    DataTranslation<TimingAshiCPU *> *translation
-        = new DataTranslation<TimingAshiCPU *>(this, state);
-    thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
-
-    return NoFault;
-}
-
-void
-TimingAshiCPU::threadSnoop(PacketPtr pkt, ThreadID sender)
-{
-    for (ThreadID tid = 0; tid < numThreads; tid++) {
-        if (tid != sender) {
-            if (getCpuAddrMonitor(tid)->doMonitor(pkt)) {
-                wakeup(tid);
-            }
-            threadInfo[tid]->thread->getIsaPtr()->handleLockedSnoop(pkt,
-                    dcachePort.cacheBlockMask);
-        }
-    }
-}
-
-void
-TimingAshiCPU::finishTranslation(WholeTranslationState *state)
-{
-    _status = BaseAshiCPU::Running;
-
-    if (state->getFault() != NoFault) {
-        if (state->isPrefetch()) {
-            state->setNoFault();
-        }
-        delete [] state->data;
-        state->deleteReqs();
-        translationFault(state->getFault());
-    } else {
-        if (!state->isSplit) {
-            sendData(state->mainReq, state->data, state->res,
-                     state->mode == BaseMMU::Read);
-        } else {
-            sendSplitData(state->sreqLow, state->sreqHigh, state->mainReq,
-                          state->data, state->mode == BaseMMU::Read);
-        }
-    }
-
-    delete state;
-}
-
 
 void
 TimingAshiCPU::fetch()
@@ -709,107 +138,6 @@ TimingAshiCPU::fetch()
         updateCycleCounters(BaseCPU::CPU_STATE_ON);
     }
 }
-
-
-void
-TimingAshiCPU::sendFetch(const Fault &fault, const RequestPtr &req,
-                           ThreadContext *tc)
-{
-    auto &decoder = threadInfo[curThread]->thread->decoder;
-
-    if (fault == NoFault) {
-        DPRINTF(AshiCPU, "Sending fetch for addr %#x(pa: %#x)\n",
-                req->getVaddr(), req->getPaddr());
-        ifetch_pkt = new Packet(req, MemCmd::ReadReq);
-        ifetch_pkt->dataStatic(decoder->moreBytesPtr());
-        DPRINTF(AshiCPU, " -- pkt addr: %#x\n", ifetch_pkt->getAddr());
-
-        if (!icachePort.sendTimingReq(ifetch_pkt)) {
-            // Need to wait for retry
-            _status = IcacheRetry;
-        } else {
-            // Need to wait for cache to respond
-            _status = IcacheWaitResponse;
-            // ownership of packet transferred to memory system
-            ifetch_pkt = NULL;
-        }
-    } else {
-        DPRINTF(AshiCPU, "Translation of addr %#x faulted\n", req->getVaddr());
-        // fetch fault: advance directly to next instruction (fault handler)
-        _status = BaseAshiCPU::Running;
-        advanceInst(fault);
-    }
-
-    updateCycleCounts();
-    updateCycleCounters(BaseCPU::CPU_STATE_ON);
-}
-
-
-void
-TimingAshiCPU::advanceInst(const Fault &fault)
-{
-    SimpleExecContext &t_info = *threadInfo[curThread];
-
-    if (_status == Faulting)
-        return;
-
-    if (fault != NoFault) {
-        // hardware transactional memory
-        // If a fault occurred within a transaction
-        // ensure that the transaction aborts
-        if (t_info.inHtmTransactionalState() &&
-            !std::dynamic_pointer_cast<GenericHtmFailureFault>(fault)) {
-            DPRINTF(HtmCpu, "fault (%s) occurred - "
-                "replacing with HTM abort fault htmUid=%u\n",
-                fault->name(), t_info.getHtmTransactionUid());
-
-            Fault tmfault = std::make_shared<GenericHtmFailureFault>(
-                t_info.getHtmTransactionUid(),
-                HtmFailureFaultCause::EXCEPTION);
-
-            advancePC(tmfault);
-            reschedule(fetchEvent, clockEdge(), true);
-            _status = Faulting;
-            return;
-        }
-
-        DPRINTF(AshiCPU, "Fault occured. Handling the fault\n");
-
-        advancePC(fault);
-
-        // A syscall fault could suspend this CPU (e.g., futex_wait)
-        // If the _status is not Idle, schedule an event to fetch the next
-        // instruction after 'stall' ticks.
-        // If the cpu has been suspended (i.e., _status == Idle), another
-        // cpu will wake this cpu up later.
-        if (_status != Idle) {
-            DPRINTF(AshiCPU, "Scheduling fetch event after the Fault\n");
-
-            Tick stall = std::dynamic_pointer_cast<SyscallRetryFault>(fault) ?
-                         clockEdge(syscallRetryLatency) : clockEdge();
-            reschedule(fetchEvent, stall, true);
-            _status = Faulting;
-        }
-
-        return;
-    }
-
-    if (!t_info.stayAtPC)
-        advancePC(fault);
-
-    if (tryCompleteDrain())
-        return;
-
-    serviceInstCountEvents();
-
-    if (_status == BaseAshiCPU::Running) {
-        // kick off fetch of next instruction... callback from icache
-        // response will cause that instruction to be executed,
-        // keeping the CPU running.
-        fetch();
-    }
-}
-
 
 void
 TimingAshiCPU::completeIfetch(PacketPtr pkt)
@@ -877,6 +205,7 @@ TimingAshiCPU::completeIfetch(PacketPtr pkt)
         if (fault == NoFault) {
             postExecute();
             countInst();
+            AnalyseBranch(curStaticInst);
         } else if (traceData) {
             traceFault();
         }
@@ -892,48 +221,6 @@ TimingAshiCPU::completeIfetch(PacketPtr pkt)
 
     if (pkt) {
         delete pkt;
-    }
-}
-
-void
-TimingAshiCPU::IcachePort::ITickEvent::process()
-{
-    cpu->completeIfetch(pkt);
-}
-
-bool
-TimingAshiCPU::IcachePort::recvTimingResp(PacketPtr pkt)
-{
-    DPRINTF(AshiCPU, "Received fetch response %#x\n", pkt->getAddr());
-
-    // hardware transactional memory
-    // Currently, there is no support for tracking instruction fetches
-    // in an transaction's read set.
-    if (pkt->htmTransactionFailedInCache()) {
-        panic("HTM transactional support for"
-              " instruction stream not yet supported\n");
-    }
-
-    // we should only ever see one response per cycle since we only
-    // issue a new request once this response is sunk
-    assert(!tickEvent.scheduled());
-    // delay processing of returned data until next CPU clock edge
-    tickEvent.schedule(pkt, cpu->clockEdge());
-
-    return true;
-}
-
-void
-TimingAshiCPU::IcachePort::recvReqRetry()
-{
-    // we shouldn't get a retry unless we have a packet that we're
-    // waiting to transmit
-    assert(cpu->ifetch_pkt != NULL);
-    assert(cpu->_status == IcacheRetry);
-    PacketPtr tmp = cpu->ifetch_pkt;
-    if (sendTimingReq(tmp)) {
-        cpu->_status = IcacheWaitResponse;
-        cpu->ifetch_pkt = NULL;
     }
 }
 
@@ -1074,6 +361,68 @@ TimingAshiCPU::completeDataAccess(PacketPtr pkt)
 }
 
 void
+TimingAshiCPU::advanceInst(const Fault &fault)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+
+    if (_status == Faulting)
+        return;
+
+    if (fault != NoFault) {
+        // hardware transactional memory
+        // If a fault occurred within a transaction
+        // ensure that the transaction aborts
+        if (t_info.inHtmTransactionalState() &&
+            !std::dynamic_pointer_cast<GenericHtmFailureFault>(fault)) {
+            DPRINTF(HtmCpu, "fault (%s) occurred - "
+                "replacing with HTM abort fault htmUid=%u\n",
+                fault->name(), t_info.getHtmTransactionUid());
+
+            Fault tmfault = std::make_shared<GenericHtmFailureFault>(
+                t_info.getHtmTransactionUid(),
+                HtmFailureFaultCause::EXCEPTION);
+
+            advancePC(tmfault);
+            reschedule(fetchEvent, clockEdge(), true);
+            _status = Faulting;
+            return;
+        }
+
+        DPRINTF(AshiCPU, "Fault occured. Handling the fault\n");
+
+        advancePC(fault);
+
+        // A syscall fault could suspend this CPU (e.g., futex_wait)
+        // If the _status is not Idle, schedule an event to fetch the next
+        // instruction after 'stall' ticks.
+        // If the cpu has been suspended (i.e., _status == Idle), another
+        // cpu will wake this cpu up later.
+        if (_status != Idle) {
+            DPRINTF(AshiCPU, "Scheduling fetch event after the Fault\n");
+
+            Tick stall = std::dynamic_pointer_cast<SyscallRetryFault>(fault) ?
+                         clockEdge(syscallRetryLatency) : clockEdge();
+            reschedule(fetchEvent, stall, true);
+            _status = Faulting;
+        }
+
+        return;
+    }
+
+    if (!t_info.stayAtPC)
+        advancePC(fault);
+
+    serviceInstCountEvents();
+
+    if (_status == BaseAshiCPU::Running) {
+        // kick off fetch of next instruction... callback from icache
+        // response will cause that instruction to be executed,
+        // keeping the CPU running.
+        fetch();
+    }
+}
+
+void
 TimingAshiCPU::updateCycleCounts()
 {
     const Cycles delta(curCycle() - previousCycle);
@@ -1083,6 +432,99 @@ TimingAshiCPU::updateCycleCounts()
     previousCycle = curCycle();
 }
 
+
+//****************************************************** */
+
+//-------------   Fetch Operations   -------------
+
+//****************************************************** */
+void
+TimingAshiCPU::sendFetch(const Fault &fault, const RequestPtr &req,
+                           ThreadContext *tc)
+{
+    auto &decoder = threadInfo[curThread]->thread->decoder;
+
+    if (fault == NoFault) {
+        DPRINTF(AshiCPU, "Sending fetch for addr %#x(pa: %#x)\n",
+                req->getVaddr(), req->getPaddr());
+        ifetch_pkt = new Packet(req, MemCmd::ReadReq);
+        ifetch_pkt->dataStatic(decoder->moreBytesPtr());
+        DPRINTF(AshiCPU, " -- pkt addr: %#x\n", ifetch_pkt->getAddr());
+
+        if (!icachePort.sendTimingReq(ifetch_pkt)) {
+            // Need to wait for retry
+            _status = IcacheRetry;
+        } else {
+            // Need to wait for cache to respond
+            _status = IcacheWaitResponse;
+            // ownership of packet transferred to memory system
+            ifetch_pkt = NULL;
+        }
+    } else {
+        DPRINTF(AshiCPU, "Translation of addr %#x faulted\n", req->getVaddr());
+        // fetch fault: advance directly to next instruction (fault handler)
+        _status = BaseAshiCPU::Running;
+        advanceInst(fault);
+    }
+
+    updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
+}
+
+bool
+TimingAshiCPU::IcachePort::recvTimingResp(PacketPtr pkt)
+{
+    DPRINTF(AshiCPU, "Received fetch response %#x\n", pkt->getAddr());
+
+    // hardware transactional memory
+    // Currently, there is no support for tracking instruction fetches
+    // in an transaction's read set.
+    if (pkt->htmTransactionFailedInCache()) {
+        panic("HTM transactional support for"
+              " instruction stream not yet supported\n");
+    }
+
+    // we should only ever see one response per cycle since we only
+    // issue a new request once this response is sunk
+    assert(!tickEvent.scheduled());
+    // delay processing of returned data until next CPU clock edge
+    tickEvent.schedule(pkt, cpu->clockEdge());
+
+    return true;
+}
+
+void
+TimingAshiCPU::IcachePort::recvReqRetry()
+{
+    // we shouldn't get a retry unless we have a packet that we're
+    // waiting to transmit
+    assert(cpu->ifetch_pkt != NULL);
+    assert(cpu->_status == IcacheRetry);
+    PacketPtr tmp = cpu->ifetch_pkt;
+    if (sendTimingReq(tmp)) {
+        cpu->_status = IcacheWaitResponse;
+        cpu->ifetch_pkt = NULL;
+    }
+}
+
+void
+TimingAshiCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
+{
+    pkt = _pkt;
+    cpu->schedule(this, t);
+}
+
+void
+TimingAshiCPU::IcachePort::ITickEvent::process()
+{
+    cpu->completeIfetch(pkt);
+}
+
+//****************************************************** */
+
+//-------------   LSU Operations   -------------
+
+//****************************************************** */
 void
 TimingAshiCPU::DcachePort::recvTimingSnoopReq(PacketPtr pkt)
 {
@@ -1131,33 +573,6 @@ TimingAshiCPU::DcachePort::recvFunctionalSnoop(PacketPtr pkt)
     }
 }
 
-bool
-TimingAshiCPU::DcachePort::recvTimingResp(PacketPtr pkt)
-{
-    DPRINTF(AshiCPU, "Received load/store response %#x\n", pkt->getAddr());
-
-    // The timing CPU is not really ticked, instead it relies on the
-    // memory system (fetch and load/store) to set the pace.
-    if (!tickEvent.scheduled()) {
-        // Delay processing of returned data until next CPU clock edge
-        tickEvent.schedule(pkt, cpu->clockEdge());
-        return true;
-    } else {
-        // In the case of a split transaction and a cache that is
-        // faster than a CPU we could get two responses in the
-        // same tick, delay the second one
-        if (!retryRespEvent.scheduled())
-            cpu->schedule(retryRespEvent, cpu->clockEdge(Cycles(1)));
-        return false;
-    }
-}
-
-void
-TimingAshiCPU::DcachePort::DTickEvent::process()
-{
-    cpu->completeDataAccess(pkt);
-}
-
 void
 TimingAshiCPU::DcachePort::recvReqRetry()
 {
@@ -1202,6 +617,405 @@ TimingAshiCPU::DcachePort::recvReqRetry()
     }
 }
 
+bool
+TimingAshiCPU::DcachePort::recvTimingResp(PacketPtr pkt)
+{
+    DPRINTF(AshiCPU, "Received load/store response %#x\n", pkt->getAddr());
+
+    // The timing CPU is not really ticked, instead it relies on the
+    // memory system (fetch and load/store) to set the pace.
+    if (!tickEvent.scheduled()) {
+        // Delay processing of returned data until next CPU clock edge
+        tickEvent.schedule(pkt, cpu->clockEdge());
+        return true;
+    } else {
+        // In the case of a split transaction and a cache that is
+        // faster than a CPU we could get two responses in the
+        // same tick, delay the second one
+        if (!retryRespEvent.scheduled())
+            cpu->schedule(retryRespEvent, cpu->clockEdge(Cycles(1)));
+        return false;
+    }
+}
+
+void
+TimingAshiCPU::DcachePort::DTickEvent::process()
+{
+    cpu->completeDataAccess(pkt);
+}
+
+void
+TimingAshiCPU::sendData(const RequestPtr &req, uint8_t *data, uint64_t *res,
+                          bool read)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    PacketPtr pkt = buildPacket(req, read);
+    pkt->dataDynamic<uint8_t>(data);
+
+    // hardware transactional memory
+    // If the core is in transactional mode or if the request is HtmCMD
+    // to abort a transaction, the packet should reflect that it is
+    // transactional and also contain a HtmUid for debugging.
+    const bool is_htm_speculative = t_info.inHtmTransactionalState();
+    if (is_htm_speculative || req->isHTMAbort()) {
+        pkt->setHtmTransactional(t_info.getHtmTransactionUid());
+    }
+    if (req->isHTMAbort())
+        DPRINTF(HtmCpu, "htmabort htmUid=%u\n", t_info.getHtmTransactionUid());
+
+    if (req->getFlags().isSet(Request::NO_ACCESS)) {
+        assert(!dcache_pkt);
+        pkt->makeResponse();
+        completeDataAccess(pkt);
+    } else if (read) {
+        handleReadPacket(pkt);
+    } else {
+        bool do_access = true;  // flag to suppress cache access
+
+        if (req->isLLSC()) {
+            do_access = thread->getIsaPtr()->handleLockedWrite(
+                    req, dcachePort.cacheBlockMask);
+        } else if (req->isCondSwap()) {
+            assert(res);
+            req->setExtraData(*res);
+        }
+
+        if (do_access) {
+            dcache_pkt = pkt;
+            handleWritePacket();
+            threadSnoop(pkt, curThread);
+        } else {
+            _status = DcacheWaitResponse;
+            completeDataAccess(pkt);
+        }
+    }
+}
+
+void
+TimingAshiCPU::sendSplitData(const RequestPtr &req1, const RequestPtr &req2,
+                               const RequestPtr &req, uint8_t *data, bool read)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    PacketPtr pkt1, pkt2;
+    buildSplitPacket(pkt1, pkt2, req1, req2, req, data, read);
+
+    // hardware transactional memory
+    // HTM commands should never use SplitData
+    assert(!req1->isHTMCmd() && !req2->isHTMCmd());
+
+    // If the thread is executing transactionally,
+    // reflect this in the packets.
+    if (t_info.inHtmTransactionalState()) {
+        pkt1->setHtmTransactional(t_info.getHtmTransactionUid());
+        pkt2->setHtmTransactional(t_info.getHtmTransactionUid());
+    }
+
+    if (req->getFlags().isSet(Request::NO_ACCESS)) {
+        assert(!dcache_pkt);
+        pkt1->makeResponse();
+        completeDataAccess(pkt1);
+    } else if (read) {
+        SplitFragmentSenderState * send_state =
+            dynamic_cast<SplitFragmentSenderState *>(pkt1->senderState);
+        if (handleReadPacket(pkt1)) {
+            send_state->clearFromParent();
+            send_state = dynamic_cast<SplitFragmentSenderState *>(
+                    pkt2->senderState);
+            if (handleReadPacket(pkt2)) {
+                send_state->clearFromParent();
+            }
+        }
+    } else {
+        dcache_pkt = pkt1;
+        SplitFragmentSenderState * send_state =
+            dynamic_cast<SplitFragmentSenderState *>(pkt1->senderState);
+        if (handleWritePacket()) {
+            send_state->clearFromParent();
+            dcache_pkt = pkt2;
+            send_state = dynamic_cast<SplitFragmentSenderState *>(
+                    pkt2->senderState);
+            if (handleWritePacket()) {
+                send_state->clearFromParent();
+            }
+        }
+    }
+}
+
+PacketPtr
+TimingAshiCPU::buildPacket(const RequestPtr &req, bool read)
+{
+    return read ? Packet::createRead(req) : Packet::createWrite(req);
+}
+
+void
+TimingAshiCPU::buildSplitPacket(PacketPtr &pkt1, PacketPtr &pkt2,
+        const RequestPtr &req1, const RequestPtr &req2, const RequestPtr &req,
+        uint8_t *data, bool read)
+{
+    pkt1 = pkt2 = NULL;
+
+    assert(!req1->isLocalAccess() && !req2->isLocalAccess());
+
+    if (req->getFlags().isSet(Request::NO_ACCESS)) {
+        pkt1 = buildPacket(req, read);
+        return;
+    }
+
+    pkt1 = buildPacket(req1, read);
+    pkt2 = buildPacket(req2, read);
+
+    PacketPtr pkt = new Packet(req, pkt1->cmd.responseCommand());
+
+    pkt->dataDynamic<uint8_t>(data);
+    pkt1->dataStatic<uint8_t>(data);
+    pkt2->dataStatic<uint8_t>(data + req1->getSize());
+
+    SplitMainSenderState * main_send_state = new SplitMainSenderState;
+    pkt->senderState = main_send_state;
+    main_send_state->fragments[0] = pkt1;
+    main_send_state->fragments[1] = pkt2;
+    main_send_state->outstanding = 2;
+    pkt1->senderState = new SplitFragmentSenderState(pkt, 0);
+    pkt2->senderState = new SplitFragmentSenderState(pkt, 1);
+}
+
+void
+TimingAshiCPU::threadSnoop(PacketPtr pkt, ThreadID sender)
+{
+    for (ThreadID tid = 0; tid < numThreads; tid++) {
+        if (tid != sender) {
+            if (getCpuAddrMonitor(tid)->doMonitor(pkt)) {
+                wakeup(tid);
+            }
+            threadInfo[tid]->thread->getIsaPtr()->handleLockedSnoop(pkt,
+                    dcachePort.cacheBlockMask);
+        }
+    }
+}
+
+bool
+TimingAshiCPU::handleReadPacket(PacketPtr pkt)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    const RequestPtr &req = pkt->req;
+
+    // hardware transactional memory
+    // sanity check
+    if (req->isHTMCmd()) {
+        assert(!req->isLocalAccess());
+    }
+
+    // We're about the issues a locked load, so tell the monitor
+    // to start caring about this address
+    if (pkt->isRead() && pkt->req->isLLSC()) {
+        thread->getIsaPtr()->handleLockedRead(pkt->req);
+    }
+    if (req->isLocalAccess()) {
+        Cycles delay = req->localAccessor(thread->getTC(), pkt);
+        new IprEvent(pkt, this, clockEdge(delay));
+        _status = DcacheWaitResponse;
+        dcache_pkt = NULL;
+    } else if (!dcachePort.sendTimingReq(pkt)) {
+        _status = DcacheRetry;
+        dcache_pkt = pkt;
+    } else {
+        _status = DcacheWaitResponse;
+        // memory system takes ownership of packet
+        dcache_pkt = NULL;
+    }
+    return dcache_pkt == NULL;
+}
+
+bool
+TimingAshiCPU::handleWritePacket()
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    const RequestPtr &req = dcache_pkt->req;
+    if (req->isLocalAccess()) {
+        Cycles delay = req->localAccessor(thread->getTC(), dcache_pkt);
+        new IprEvent(dcache_pkt, this, clockEdge(delay));
+        _status = DcacheWaitResponse;
+        dcache_pkt = NULL;
+    } else if (!dcachePort.sendTimingReq(dcache_pkt)) {
+        _status = DcacheRetry;
+    } else {
+        _status = DcacheWaitResponse;
+        // memory system takes ownership of packet
+        dcache_pkt = NULL;
+    }
+    return dcache_pkt == NULL;
+}
+
+Fault
+TimingAshiCPU::initiateMemRead(Addr addr, unsigned size,
+                                 Request::Flags flags,
+                                 const std::vector<bool>& byte_enable)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    Fault fault;
+    const Addr pc = thread->pcState().instAddr();
+    unsigned block_size = cacheLineSize();
+    BaseMMU::Mode mode = BaseMMU::Read;
+
+    if (traceData)
+        traceData->setMem(addr, size, flags);
+
+    RequestPtr req = std::make_shared<Request>(
+        addr, size, flags, dataRequestorId(), pc, thread->contextId());
+    req->setByteEnable(byte_enable);
+
+    req->taskId(taskId());
+
+    Addr split_addr = roundDown(addr + size - 1, block_size);
+    assert(split_addr <= addr || split_addr - addr < block_size);
+
+    _status = DTBWaitResponse;
+    if (split_addr > addr) {
+        RequestPtr req1, req2;
+        assert(!req->isLLSC() && !req->isSwap());
+        req->splitOnVaddr(split_addr, req1, req2);
+
+        WholeTranslationState *state =
+            new WholeTranslationState(req, req1, req2, new uint8_t[size],
+                                      NULL, mode);
+        DataTranslation<TimingAshiCPU *> *trans1 =
+            new DataTranslation<TimingAshiCPU *>(this, state, 0);
+        DataTranslation<TimingAshiCPU *> *trans2 =
+            new DataTranslation<TimingAshiCPU *>(this, state, 1);
+
+        thread->mmu->translateTiming(req1, thread->getTC(), trans1, mode);
+        thread->mmu->translateTiming(req2, thread->getTC(), trans2, mode);
+    } else {
+        WholeTranslationState *state =
+            new WholeTranslationState(req, new uint8_t[size], NULL, mode);
+        DataTranslation<TimingAshiCPU *> *translation
+            = new DataTranslation<TimingAshiCPU *>(this, state);
+        thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
+    }
+
+    return NoFault;
+}
+
+Fault
+TimingAshiCPU::writeMem(uint8_t *data, unsigned size,
+                          Addr addr, Request::Flags flags, uint64_t *res,
+                          const std::vector<bool>& byte_enable)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    uint8_t *newData = new uint8_t[size];
+    const Addr pc = thread->pcState().instAddr();
+    unsigned block_size = cacheLineSize();
+    BaseMMU::Mode mode = BaseMMU::Write;
+
+    if (data == NULL) {
+        assert(flags & Request::STORE_NO_DATA);
+        // This must be a cache block cleaning request
+        memset(newData, 0, size);
+    } else {
+        memcpy(newData, data, size);
+    }
+
+    if (traceData)
+        traceData->setMem(addr, size, flags);
+
+    RequestPtr req = std::make_shared<Request>(
+        addr, size, flags, dataRequestorId(), pc, thread->contextId());
+    req->setByteEnable(byte_enable);
+
+    req->taskId(taskId());
+
+    Addr split_addr = roundDown(addr + size - 1, block_size);
+    assert(split_addr <= addr || split_addr - addr < block_size);
+
+    _status = DTBWaitResponse;
+
+    // TODO: TimingAshiCPU doesn't support arbitrarily long multi-line mem.
+    // accesses yet
+
+    if (split_addr > addr) {
+        RequestPtr req1, req2;
+        assert(!req->isLLSC() && !req->isSwap());
+        req->splitOnVaddr(split_addr, req1, req2);
+
+        WholeTranslationState *state =
+            new WholeTranslationState(req, req1, req2, newData, res, mode);
+        DataTranslation<TimingAshiCPU *> *trans1 =
+            new DataTranslation<TimingAshiCPU *>(this, state, 0);
+        DataTranslation<TimingAshiCPU *> *trans2 =
+            new DataTranslation<TimingAshiCPU *>(this, state, 1);
+
+        thread->mmu->translateTiming(req1, thread->getTC(), trans1, mode);
+        thread->mmu->translateTiming(req2, thread->getTC(), trans2, mode);
+    } else {
+        WholeTranslationState *state =
+            new WholeTranslationState(req, newData, res, mode);
+        DataTranslation<TimingAshiCPU *> *translation =
+            new DataTranslation<TimingAshiCPU *>(this, state);
+        thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
+    }
+
+    // Translation faults will be returned via finishTranslation()
+    return NoFault;
+}
+
+Fault
+TimingAshiCPU::initiateMemAMO(Addr addr, unsigned size,
+                                Request::Flags flags,
+                                AtomicOpFunctorPtr amo_op)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
+    Fault fault;
+    const Addr pc = thread->pcState().instAddr();
+    unsigned block_size = cacheLineSize();
+    BaseMMU::Mode mode = BaseMMU::Write;
+
+    if (traceData)
+        traceData->setMem(addr, size, flags);
+
+    RequestPtr req = std::make_shared<Request>(addr, size, flags,
+                            dataRequestorId(), pc, thread->contextId(),
+                            std::move(amo_op));
+
+    assert(req->hasAtomicOpFunctor());
+
+    req->taskId(taskId());
+
+    Addr split_addr = roundDown(addr + size - 1, block_size);
+
+    // AMO requests that access across a cache line boundary are not
+    // allowed since the cache does not guarantee AMO ops to be executed
+    // atomically in two cache lines
+    // For ISAs such as x86 that requires AMO operations to work on
+    // accesses that cross cache-line boundaries, the cache needs to be
+    // modified to support locking both cache lines to guarantee the
+    // atomicity.
+    if (split_addr > addr) {
+        panic("AMO requests should not access across a cache line boundary\n");
+    }
+
+    _status = DTBWaitResponse;
+
+    WholeTranslationState *state =
+        new WholeTranslationState(req, new uint8_t[size], NULL, mode);
+    DataTranslation<TimingAshiCPU *> *translation
+        = new DataTranslation<TimingAshiCPU *>(this, state);
+    thread->mmu->translateTiming(req, thread->getTC(), translation, mode);
+
+    return NoFault;
+}
+
 TimingAshiCPU::IprEvent::IprEvent(Packet *_pkt, TimingAshiCPU *_cpu,
     Tick t)
     : pkt(_pkt), cpu(_cpu)
@@ -1221,13 +1035,11 @@ TimingAshiCPU::IprEvent::description() const
     return "Timing Ashi CPU Delay IPR event";
 }
 
+//****************************************************** */
 
-void
-TimingAshiCPU::printAddr(Addr a)
-{
-    dcachePort.printAddr(a);
-}
+//-------------   MMU Operations   -------------
 
+//****************************************************** */
 Fault
 TimingAshiCPU::initiateMemMgmtCmd(Request::Flags flags)
 {
@@ -1279,6 +1091,64 @@ TimingAshiCPU::initiateMemMgmtCmd(Request::Flags flags)
 }
 
 void
+TimingAshiCPU::translationFault(const Fault &fault)
+{
+    // fault may be NoFault in cases where a fault is suppressed,
+    // for instance prefetches.
+    updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
+
+    if ((fault != NoFault) && traceData) {
+        traceFault();
+    }
+
+    if (fault == NoFault) {
+        postExecute();
+    }
+
+    advanceInst(fault);
+}
+
+void
+TimingAshiCPU::finishTranslation(WholeTranslationState *state)
+{
+    _status = BaseAshiCPU::Running;
+
+    if (state->getFault() != NoFault) {
+        if (state->isPrefetch()) {
+            state->setNoFault();
+        }
+        delete [] state->data;
+        state->deleteReqs();
+        translationFault(state->getFault());
+    } else {
+        if (!state->isSplit) {
+            sendData(state->mainReq, state->data, state->res,
+                     state->mode == BaseMMU::Read);
+        } else {
+            sendSplitData(state->sreqLow, state->sreqHigh, state->mainReq,
+                          state->data, state->mode == BaseMMU::Read);
+        }
+    }
+
+    delete state;
+}
+
+
+//****************************************************** */
+
+//---------------------- Others ------------------------
+
+//****************************************************** */
+
+//void
+//TimingAshiCPU::printAddr(Addr a)
+//{
+//    dcachePort.printAddr(a);
+//}
+
+
+void
 TimingAshiCPU::htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
                                     HtmFailureFaultCause cause)
 {
@@ -1314,5 +1184,31 @@ TimingAshiCPU::htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
 
     sendData(req, data, nullptr, true);
 }
+
+void 
+TimingAshiCPU::AnalyseBranch(const StaticInstPtr inst)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+
+    if (inst->isCondCtrl()) {
+        cnt_branch++;
+    } else if (inst->isIndirectCtrl()) {
+        cnt_jr++;
+    } else if (inst->isDirectCtrl()) {
+        cnt_j++;
+    }
+    DPRINTF(AshiANY," ***ANY*** Inst Name: %s\n", inst->getName());
+    DPRINTF(AshiANY," ***ANY*** branch cnt: %d\n", cnt_branch);
+    DPRINTF(AshiANY," ***ANY*** jr cnt: %d\n", cnt_jr);
+    DPRINTF(AshiANY," ***ANY*** j cnt: %d\n", cnt_j);
+    //if (t_info.thread->pcState().instAddr()) {
+    DPRINTF(AshiANY," ***ANY*** current pc: %#x\n", t_info.thread->pcState().instAddr());
+    //}
+    //DPRINTF(AshiANY," ***ANY*** branch offset: %#x\n", t_info.fetchOffset);
+    //if (t_info.predPC->instAddr()) {
+    //    DPRINTF(AshiANY," ***ANY*** pred pc: %#x\n", t_info.predPC->instAddr());
+    //}
+}
+
 
 } // namespace gem5

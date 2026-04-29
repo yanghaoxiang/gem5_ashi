@@ -1,0 +1,1 @@
+ scons build/RISCV/gem5.debug -j 8

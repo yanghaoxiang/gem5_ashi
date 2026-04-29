@@ -1,1 +1,1 @@
-./build/RISCV/gem5.opt --debug-flags=AshiCPU configs/ashi/simple.py
+./build/RISCV/gem5.opt --debug-flags=AshiANY configs/ashi/simple.py

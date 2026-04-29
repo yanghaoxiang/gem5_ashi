@@ -57,18 +57,7 @@ class TimingAshiCPU : public BaseAshiCPU
     TimingAshiCPU(const BaseTimingAshiCPUParams &params);
     virtual ~TimingAshiCPU();
 
-
-
-    DrainState drain() override;
-    void drainResume() override;
-
-    void switchOut() override;
-    void takeOverFrom(BaseCPU *oldCPU) override;
-
-    void verifyMemoryMode() const override;
-
     void activateContext(ThreadID thread_num) override;
-    void suspendContext(ThreadID thread_num) override;
 
     Fault initiateMemRead(Addr addr, unsigned size,
             Request::Flags flags,
@@ -102,7 +91,7 @@ class TimingAshiCPU : public BaseAshiCPU
      * Print state of address in memory system via PrintReq (for
      * debugging).
      */
-    void printAddr(Addr a);
+    //void printAddr(Addr a);
 
     /**
      * Finish a DTB translation.
@@ -115,6 +104,15 @@ class TimingAshiCPU : public BaseAshiCPU
 
     void htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
                             HtmFailureFaultCause) override;
+
+        //DIY
+
+    int cnt_branch;
+    int cnt_jr;
+    int cnt_j;
+
+    void AnalyseBranch(const StaticInstPtr inst);
+
   private:
 
     /*
@@ -222,42 +220,6 @@ class TimingAshiCPU : public BaseAshiCPU
         virtual const char *description() const;
     };
 
-    /**
-     * Check if a system is in a drained state.
-     *
-     * We need to drain if:
-     * <ul>
-     * <li>We are in the middle of a microcode sequence as some CPUs
-     *     (e.g., HW accelerated CPUs) can't be started in the middle
-     *     of a gem5 microcode sequence.
-     *
-     * <li>Stay at PC is true.
-     *
-     * <li>A fetch event is scheduled. Normally this would never be the
-     *     case with microPC() == 0, but right after a context is
-     *     activated it can happen.
-     * </ul>
-     */
-    bool isCpuDrained() const {
-        SimpleExecContext& t_info = *threadInfo[curThread];
-        SimpleThread* thread = t_info.thread;
-
-        return thread->pcState().microPC() == 0 && !t_info.stayAtPC &&
-               !fetchEvent.scheduled();
-    }
-
-    /**
-     * Try to complete a drain request.
-     *
-     * @returns true if the CPU is drained, false otherwise.
-     */
-    bool tryCompleteDrain();
-    /**
-     * A TimingCPUPort overrides the default behaviour of the
-     * recvTiming and recvRetry and implements events for the
-     * scheduling of handling of incoming packets in the following
-     * cycle.
-     */
     class TimingCPUPort : public RequestPort
     {
       public:
