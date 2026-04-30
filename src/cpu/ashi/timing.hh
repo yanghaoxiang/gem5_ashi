@@ -107,11 +107,12 @@ class TimingAshiCPU : public BaseAshiCPU
 
         //DIY
 
+    unsigned int any_loop_size;
     int cnt_branch;
     int cnt_jr;
     int cnt_j;
 
-    void AnalyseBranch(const StaticInstPtr inst);
+    void AnalyseBranch(const StaticInstPtr inst,PacketPtr pkt);
 
   private:
 
@@ -313,6 +314,11 @@ class TimingAshiCPU : public BaseAshiCPU
         DTickEvent tickEvent;
 
     };
+
+    class BPLoopBuffer {
+
+    }
+
 
     void updateCycleCounts();
     IcachePort icachePort;

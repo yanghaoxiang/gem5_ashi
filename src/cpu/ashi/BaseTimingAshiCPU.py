@@ -33,6 +33,8 @@ class BaseTimingAshiCPU(BaseAshiCPU):
     cxx_header = "cpu/ashi/timing.hh"
     cxx_class = "gem5::TimingAshiCPU"
 
+    loop_size = Param.Int(128, "Size of the loop buffer in bytes")
+
     @classmethod
     def memory_mode(cls):
         return "timing"

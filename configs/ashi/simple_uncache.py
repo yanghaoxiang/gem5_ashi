@@ -63,29 +63,19 @@ system.mem_ranges = [AddrRange("8GiB")]  # Create an address range
 # Create a simple CPU
 # You can use ISA-specific CPU models for different workloads:
 # `RiscvTimingSimpleCPU`, `ArmTimingSimpleCPU`.
-system.cpu = RiscvTimingAshiCPU(loop_size='1024')
+system.cpu = RiscvTimingAshiCPU()
 
 #caches
-system.cpu.icache = L1ICache()
-system.cpu.dcache = L1DCache()
 
-system.cpu.icache.connectCPU(system.cpu)
-system.cpu.dcache.connectCPU(system.cpu)
 
-system.l2bus = L2XBar()
-system.cpu.icache.connectBus(system.l2bus)
-system.cpu.dcache.connectBus(system.l2bus)
-
-system.l2cache = L2Cache()
-system.l2cache.connectCPUSideBus(system.l2bus)
 # Create a memory bus, a system crossbar, in this case
 
 system.membus = SystemXBar()
-system.l2cache.connectMemSideBus(system.membus)
+
 
 # Hook the CPU ports up to the membus
-# system.cpu.icache_port = system.membus.cpu_side_ports
-# system.cpu.dcache_port = system.membus.cpu_side_ports
+system.cpu.icache_port = system.membus.cpu_side_ports
+system.cpu.dcache_port = system.membus.cpu_side_ports
 
 # create the interrupt controller for the CPU and connect to the membus
 system.cpu.createInterruptController()

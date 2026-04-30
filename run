@@ -1,1 +1,3 @@
-./build/RISCV/gem5.opt --debug-flags=AshiANY configs/ashi/simple.py
+#./build/RISCV/gem5.opt --debug-flags=AshiANY  --debug-file=output configs/ashi/simple.py
+./build/RISCV/gem5.opt --debug-flags=AshiANY  configs/ashi/simple.py
+#./build/RISCV/gem5.opt --debug-flags=AshiANY  configs/ashi/simple_uncache.py

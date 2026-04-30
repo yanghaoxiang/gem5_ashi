@@ -56,6 +56,8 @@
 #include "sim/faults.hh"
 #include "sim/full_system.hh"
 #include "sim/system.hh"
+#include "arch/riscv/insts/static_inst.hh"
+
 
 namespace gem5
 {
@@ -63,6 +65,7 @@ namespace gem5
 TimingAshiCPU::TimingAshiCPU(const BaseTimingAshiCPUParams &p)
     : BaseAshiCPU(p), fetchTranslation(this), icachePort(this),
       dcachePort(this), ifetch_pkt(NULL), dcache_pkt(NULL), previousCycle(0),    
+      any_loop_size(p.loop_size),
       fetchEvent([this]{ fetch(); }, name())
 {
     _status = Idle;
@@ -158,9 +161,9 @@ TimingAshiCPU::completeIfetch(PacketPtr pkt)
     updateCycleCounts();
     updateCycleCounters(BaseCPU::CPU_STATE_ON);
 
-    if (pkt)
+    if (pkt){
         pkt->req->setAccessLatency();
-
+    }
 
     preExecute();
 
@@ -205,7 +208,6 @@ TimingAshiCPU::completeIfetch(PacketPtr pkt)
         if (fault == NoFault) {
             postExecute();
             countInst();
-            AnalyseBranch(curStaticInst);
         } else if (traceData) {
             traceFault();
         }
@@ -218,6 +220,7 @@ TimingAshiCPU::completeIfetch(PacketPtr pkt)
     } else {
         advanceInst(NoFault);
     }
+    AnalyseBranch(curStaticInst,pkt);
 
     if (pkt) {
         delete pkt;
@@ -1186,28 +1189,32 @@ TimingAshiCPU::htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
 }
 
 void 
-TimingAshiCPU::AnalyseBranch(const StaticInstPtr inst)
+TimingAshiCPU::AnalyseBranch(const StaticInstPtr inst,PacketPtr pkt)
 {
     SimpleExecContext &t_info = *threadInfo[curThread];
 
-    if (inst->isCondCtrl()) {
-        cnt_branch++;
-    } else if (inst->isIndirectCtrl()) {
-        cnt_jr++;
-    } else if (inst->isDirectCtrl()) {
-        cnt_j++;
+    // if (inst){
+        // if (inst->isCondCtrl()) {
+            // cnt_branch++;
+        // } else if (inst->isIndirectCtrl()) {
+            // cnt_jr++;
+        // } else if (inst->isDirectCtrl()) {
+            // cnt_j++;
+        // }
+    // }
+
+    if(inst && inst->isCondCtrl()){
+        DPRINTF(AshiANY," ******   ANY   ******\n");
+        auto rv_inst = dynamic_cast<RiscvISA::RiscvStaticInst*>(inst.get());
+        DPRINTF(AshiANY," Inst code: %#x\n", rv_inst->getEMI());
+        DPRINTF(AshiANY," Inst Name: %s\n", inst->getName());
+        DPRINTF(AshiANY," pre pc: %#x\n", preExecuteTempPC->instAddr());
+        DPRINTF(AshiANY," nxt pc: %#x\n\n", t_info.thread->pcState().instAddr());
+        DPRINTF(AshiANY," loop_size: %#x\n\n", any_loop_size);
     }
-    DPRINTF(AshiANY," ***ANY*** Inst Name: %s\n", inst->getName());
-    DPRINTF(AshiANY," ***ANY*** branch cnt: %d\n", cnt_branch);
-    DPRINTF(AshiANY," ***ANY*** jr cnt: %d\n", cnt_jr);
-    DPRINTF(AshiANY," ***ANY*** j cnt: %d\n", cnt_j);
-    //if (t_info.thread->pcState().instAddr()) {
-    DPRINTF(AshiANY," ***ANY*** current pc: %#x\n", t_info.thread->pcState().instAddr());
-    //}
-    //DPRINTF(AshiANY," ***ANY*** branch offset: %#x\n", t_info.fetchOffset);
-    //if (t_info.predPC->instAddr()) {
-    //    DPRINTF(AshiANY," ***ANY*** pred pc: %#x\n", t_info.predPC->instAddr());
-    //}
+
+    // DPRINTF(AshiANY," ***ANY*** pred pc: %#x\n", t_info.predPC->instAddr());
+    // DPRINTF(AshiANY, "code: 0x%08x\n",pkt->getLE<uint32_t>());
 }
 
 
