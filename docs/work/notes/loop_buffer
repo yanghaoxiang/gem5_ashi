@@ -1,0 +1,36 @@
+# Loop Buffer 实验记录
+
+## 记录信息
+
+- 记录日期：2026-05-07
+
+## 实验目的
+
+基于 `TimingSimpleCPU` 简化实现 `TimingAshiCPU`，在指令完成阶段捕捉跳转指令的行为状态，并模拟 `loop_buffer` 存在时的命中情况，统计其命中率。
+
+## 实现概要
+
+- 以 `TimingSimpleCPU` 为基础简化得到 `TimingAshiCPU`。
+- 在 `TimingAshiCPU` 内定义 `AnalyseBranch` 对象，用于分析跳转指令行为。
+- 在 `TimingAshiCPU` 内定义 `BPLoopBuffer` 对象，用于模拟 `loop_buffer` 的命中情况。
+- 在指令完成阶段对跳转相关状态进行捕捉，并据此统计 `loop_buffer` 命中次数。
+
+## 实验环境
+
+- 配置目录：`configs/ashi/timing_ashi`
+
+## 实验负载
+
+- 运行程序：`coremark test`
+
+## 实验结果
+
+- 总执行指令数：约 40 亿以上
+- `loop_buffer` 命中次数：约 15.6 亿以上
+- `loop_buffer` 命中率：约 38.7%
+
+## 结论
+
+在本次 `coremark test` 实验中，基于 `TimingAshiCPU` 的 `loop_buffer` 模拟结果表明，其对跳转相关执行流具有一定覆盖能力，整体命中率约为 `38.7%`。
+
+---

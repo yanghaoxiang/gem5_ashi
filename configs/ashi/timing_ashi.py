@@ -63,7 +63,7 @@ system.mem_ranges = [AddrRange("8GiB")]  # Create an address range
 # Create a simple CPU
 # You can use ISA-specific CPU models for different workloads:
 # `RiscvTimingSimpleCPU`, `ArmTimingSimpleCPU`.
-system.cpu = RiscvTimingAshiCPU(loop_size='1024')
+system.cpu = RiscvTimingAshiCPU(loop_size='4096')
 
 #caches
 system.cpu.icache = L1ICache()
@@ -111,8 +111,18 @@ binary = os.path.join(
     thispath,
     "../../",
     # "tests/test-progs/hello/bin/riscv/linux/hello",
-    # "tests/test-progs/dhrystone.riscv",
-    "tests/test-progs/median.riscv",
+    #  "tests/test-progs/dhrystone.riscv",
+    # "tests/test-progs/median.riscv",
+    # "tests/test-progs/qsort.riscv",
+    # "tests/test-progs/memcpy.riscv",
+    #  "tests/test-progs/mm.riscv",
+    #   "tests/test-progs/multiply.riscv",
+    #    "tests/test-progs/rsort.riscv",
+        # "tests/test-progs/pmp.riscv",
+        #  "tests/test-progs/spmv.riscv",
+        #   "tests/test-progs/towers.riscv",
+        #   "tests/test-progs/vvadd.riscv",
+          "tests/test-progs/coremark.riscv",
 )
 
 system.workload = SEWorkload.init_compatible(binary)

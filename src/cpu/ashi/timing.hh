@@ -107,7 +107,7 @@ class TimingAshiCPU : public BaseAshiCPU
 
         //DIY
 
-    unsigned int any_loop_size;
+    uint32_t any_loop_size;
     int cnt_branch;
     int cnt_jr;
     int cnt_j;
@@ -316,16 +316,36 @@ class TimingAshiCPU : public BaseAshiCPU
     };
 
     class BPLoopBuffer {
+        public:
+        enum Status{
+            Checking,
+            Filling,
+            Working
+        };
+        Status _status = Checking;
+        Addr startPoint = 0;
+        Addr endPoint = 0;
+        Counter hitCnt = 0;
+        Counter totalCnt = 0;
+        Counter loopCnt = 0;
+        uint32_t loopSize;
+        uint32_t length = 0;
 
-    }
+        BPLoopBuffer(uint32_t _loopSize)
+         : loopSize(_loopSize) {};
 
+        void update(bool is_control, bool is_branch, Addr pc, Addr tgt);
+
+    };
 
     void updateCycleCounts();
+
     IcachePort icachePort;
     DcachePort dcachePort;
     PacketPtr ifetch_pkt;
     PacketPtr dcache_pkt;
     Cycles previousCycle;
+    BPLoopBuffer bpLoopBuf;
 
   protected:
 

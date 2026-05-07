@@ -66,7 +66,8 @@ TimingAshiCPU::TimingAshiCPU(const BaseTimingAshiCPUParams &p)
     : BaseAshiCPU(p), fetchTranslation(this), icachePort(this),
       dcachePort(this), ifetch_pkt(NULL), dcache_pkt(NULL), previousCycle(0),    
       any_loop_size(p.loop_size),
-      fetchEvent([this]{ fetch(); }, name())
+      fetchEvent([this]{ fetch(); }, name()),
+      bpLoopBuf(p.loop_size)
 {
     _status = Idle;
     cnt_branch = 0;
@@ -1202,19 +1203,60 @@ TimingAshiCPU::AnalyseBranch(const StaticInstPtr inst,PacketPtr pkt)
             // cnt_j++;
         // }
     // }
+    if (inst){
+        bpLoopBuf.update(inst && inst->isControl(), inst && inst->isCondCtrl(), preExecuteTempPC->instAddr(), t_info.thread->pcState().instAddr());
+    }
 
-    if(inst && inst->isCondCtrl()){
-        DPRINTF(AshiANY," ******   ANY   ******\n");
+    if(inst && inst->isIndirectCtrl()){
         auto rv_inst = dynamic_cast<RiscvISA::RiscvStaticInst*>(inst.get());
+        DPRINTF(AshiANY," ******   Running   ******\n");
+        DPRINTF(AshiANY," loop_cnt: %d\n\n", bpLoopBuf.loopCnt);
         DPRINTF(AshiANY," Inst code: %#x\n", rv_inst->getEMI());
         DPRINTF(AshiANY," Inst Name: %s\n", inst->getName());
-        DPRINTF(AshiANY," pre pc: %#x\n", preExecuteTempPC->instAddr());
-        DPRINTF(AshiANY," nxt pc: %#x\n\n", t_info.thread->pcState().instAddr());
-        DPRINTF(AshiANY," loop_size: %#x\n\n", any_loop_size);
+        // DPRINTF(AshiANY," pre pc: %#x\n", preExecuteTempPC->instAddr());
+        // DPRINTF(AshiANY," nxt pc: %#x\n\n", t_info.thread->pcState().instAddr());
+        // DPRINTF(AshiANY," start_addr: %#x\n\n", bpLoopBuf.startPoint);
+        // DPRINTF(AshiANY," end_addr: %#x\n\n", bpLoopBuf.endPoint);
+        // DPRINTF(AshiANY," loop_length: %d\n\n", bpLoopBuf.length);
+        DPRINTF(AshiANY," loop_hit_cnt: %d\n\n", bpLoopBuf.hitCnt);
+        DPRINTF(AshiANY," total_cnt: %d\n\n", bpLoopBuf.totalCnt);
     }
 
     // DPRINTF(AshiANY," ***ANY*** pred pc: %#x\n", t_info.predPC->instAddr());
     // DPRINTF(AshiANY, "code: 0x%08x\n",pkt->getLE<uint32_t>());
+}
+
+void TimingAshiCPU::BPLoopBuffer::update(bool is_control, bool is_branch, Addr pc, Addr tgt){
+    switch (_status)
+    {
+        case Checking:
+            if (is_branch && ((tgt < pc) && ((pc-tgt) <= loopSize))){
+                startPoint = tgt;
+                endPoint = pc;
+                length = endPoint - startPoint;
+                _status = Filling;
+            }
+            break;
+        case Filling:
+            if (is_control && (pc != endPoint)){
+                _status = Checking;
+            } else if (pc == endPoint){
+                _status = Working;
+                loopCnt++;
+            }
+            break;
+        case Working:
+            if (is_branch && (pc != endPoint) && ((tgt < pc) && ((pc-tgt) <= loopSize))){
+                startPoint = tgt;
+                endPoint = pc;
+                length = endPoint - startPoint;
+                _status = Filling;
+            } else if(pc >= startPoint && pc <= endPoint){
+                hitCnt++;
+            }
+            break;
+    };
+    totalCnt++;
 }
 
 
