@@ -70,9 +70,6 @@ TimingAshiCPU::TimingAshiCPU(const BaseTimingAshiCPUParams &p)
       bpLoopBuf(p.loop_size)
 {
     _status = Idle;
-    cnt_branch = 0;
-    cnt_jr = 0;
-    cnt_j = 0;
 }
 
 TimingAshiCPU::~TimingAshiCPU()

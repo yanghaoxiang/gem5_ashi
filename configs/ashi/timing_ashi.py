@@ -122,7 +122,8 @@ binary = os.path.join(
         #  "tests/test-progs/spmv.riscv",
         #   "tests/test-progs/towers.riscv",
         #   "tests/test-progs/vvadd.riscv",
-          "tests/test-progs/coremark.riscv",
+        # "tests/test-progs/coremark.riscv",
+          "tests/test-progs/dhrystone",
 )
 
 system.workload = SEWorkload.init_compatible(binary)

@@ -108,9 +108,6 @@ class TimingAshiCPU : public BaseAshiCPU
         //DIY
 
     uint32_t any_loop_size;
-    int cnt_branch;
-    int cnt_jr;
-    int cnt_j;
 
     void AnalyseBranch(const StaticInstPtr inst,PacketPtr pkt);
 

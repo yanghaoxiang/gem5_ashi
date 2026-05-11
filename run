@@ -1,1 +1,2 @@
-./build/RISCV/gem5.opt --debug-flags=AshiANY --debug-file=output --redirect-stdout --redirect-stderr configs/ashi/timing_ashi.py
+#./build/RISCV/gem5.opt --debug-flags=AshiANY --debug-file=output --redirect-stdout --redirect-stderr configs/ashi/timing_ashi.py
+./build/RISCV/gem5.opt --debug-flags=AshiANY configs/ashi/timing_ashi.py
